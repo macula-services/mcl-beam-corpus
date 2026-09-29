@@ -7,7 +7,7 @@ stage: stable
 
 # mcl-beam-corpus
 
-*Knowledge corpus for BEAM languages (Erlang, Elixir), OTP, and Event Sourcing / CQRS. Markdown only — this repo is ingested by [mcl-rag](https://github.com/macula-services/mcl-rag), the mesh's shared memory.*
+*Knowledge corpus for BEAM languages (Erlang, Elixir), OTP, Event Sourcing / CQRS, and the architecture above them. Markdown only — this repo is ingested by [mcl-rag](https://github.com/macula-services/mcl-rag), the mesh's shared memory.*
 
 This repository holds reference knowledge an agent on the Macula mesh can
 recall: how the BEAM works, how to structure OTP applications, how to build
@@ -45,6 +45,7 @@ code. It is one domain corpus of the mesh's federated retrieval.
 | **Erlang** | `erlang/` | The language: modules, records, parse transforms |
 | **Event Sourcing & CQRS** | `event-sourcing/` | Events, projections, checkpoints, sagas, process managers |
 | **Testing** | `testing/` | ExUnit, property-based testing, fault injection |
+| **Architecture** | `architecture/` | Event-driven, layered, microservices — the system-level patterns |
 
 ---
 

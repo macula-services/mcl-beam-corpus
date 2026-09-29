@@ -34,6 +34,8 @@ mesh is built on.
 | [SCHEDULER](beam/SCHEDULER.md) | The m:n model, reductions, concurrency vs parallelism |
 | [DISTRIBUTION](beam/DISTRIBUTION.md) | Location transparency, nodes, EPMD, the cookie |
 | [HOT_CODE_UPGRADES](beam/HOT_CODE_UPGRADES.md) | appup/relup, release_handler, current vs permanent |
+| [CONCURRENCY_MODELS](beam/CONCURRENCY_MODELS.md) | The seven models; the actor model's place among them |
+| [DESIGN_PATTERNS](beam/DESIGN_PATTERNS.md) | The GoF 23 mapped onto BEAM built-ins |
 
 ### Elixir — `elixir/`
 
@@ -86,8 +88,20 @@ How to hold all of the above to a standard.
 |------|--------|
 | [README](testing/README.md) | The three highest-value test shapes |
 | [TESTING_EVENT_SOURCING](testing/TESTING_EVENT_SOURCING.md) | Given/when/then, replay tests, tests as documentation |
-| [PROPERTY_BASED_TESTING](testing/PROPERTY_BASED_TESTING.md) | Invariants, generators, shrinking, stateful models |
+| [PROPERTY_BASED_TESTING](testing/PROPERTY_BASED_TESTING.md) | Stateless vs stateful, shrinking, models, state machines |
 | [FAULT_INJECTION](testing/FAULT_INJECTION.md) | Killing processes, cleanup assertions, wait_for_passing |
+| [EXUNIT](testing/EXUNIT.md) | The four phases, describe, setup blocks, async |
+
+### Architecture — `architecture/`
+
+The system-level patterns above the BEAM.
+
+| Note | Covers |
+|------|--------|
+| [README](architecture/README.md) | The pattern landscape above the process model |
+| [EVENT_DRIVEN_ARCHITECTURE](architecture/EVENT_DRIVEN_ARCHITECTURE.md) | Mediator vs broker topology |
+| [ARCHITECTURE_PATTERNS](architecture/ARCHITECTURE_PATTERNS.md) | Layered, microkernel, microservices, space-based |
+| [EXUNIT](testing/EXUNIT.md) | The four phases, describe, setup blocks, async |
 
 ---
 

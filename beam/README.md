@@ -27,6 +27,8 @@ notes are the reference for how that substrate works.
 | [SCHEDULER](SCHEDULER.md) | The m:n model, reductions, concurrency vs parallelism |
 | [DISTRIBUTION](DISTRIBUTION.md) | Location transparency, nodes, EPMD, the cookie |
 | [HOT_CODE_UPGRADES](HOT_CODE_UPGRADES.md) | appup/relup, release_handler, current vs permanent |
+| [CONCURRENCY_MODELS](CONCURRENCY_MODELS.md) | The seven models; the actor model's place among them |
+| [DESIGN_PATTERNS](DESIGN_PATTERNS.md) | The GoF 23 mapped onto BEAM built-ins |
 
 ## One-page summary
 

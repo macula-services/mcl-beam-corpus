@@ -16,8 +16,9 @@ stage: stable
 | Note | Covers |
 |------|--------|
 | [TESTING_EVENT_SOURCING](TESTING_EVENT_SOURCING.md) | Given/when/then command tests, replay tests, fault tests, tests as documentation |
-| [PROPERTY_BASED_TESTING](PROPERTY_BASED_TESTING.md) | Invariants, generators, shrinking; PropEr and StreamData; stateful models |
+| [PROPERTY_BASED_TESTING](PROPERTY_BASED_TESTING.md) | Stateless vs stateful, shrinking, models, state machines |
 | [FAULT_INJECTION](FAULT_INJECTION.md) | Killing processes, cleanup assertions, wait_for_passing |
+| [EXUNIT](EXUNIT.md) | The four phases, describe, setup blocks, async |
 
 ## One-page summary
 
