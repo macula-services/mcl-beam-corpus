@@ -27,6 +27,8 @@ events record, projections answer.
 | [PROJECTIONS](PROJECTIONS.md) | Simple, updating, inserting, batched; checkpoints; replay vs live |
 | [CHECKPOINTS](CHECKPOINTS.md) | Memory, file, database, stream, shared, consensus; the monitoring angle |
 | [SAGAS_AND_PROCESS_MANAGERS](SAGAS_AND_PROCESS_MANAGERS.md) | The distinction; event-sourced managers; versioning long processes |
+| [AGGREGATES](AGGREGATES.md) | The consistency boundary: hydration, aggregate root, invariants |
+| [DOMAIN_MODELING](DOMAIN_MODELING.md) | Bounded contexts, entities vs value objects, ubiquitous language |
 | [IDS_AND_CORRELATION](IDS_AND_CORRELATION.md) | Message, causation, correlation, conversation ids; the graphs |
 | [INTEGRATION_EVENTS](INTEGRATION_EVENTS.md) | Denormalized contracts; aggregators; direct integration's ceiling |
 | [STREAM_FORK_AND_JOIN](STREAM_FORK_AND_JOIN.md) | Reindexing with link events; the join's ordering problem |

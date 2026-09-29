@@ -17,6 +17,7 @@ stage: stable
 |------|--------|
 | [TESTING_EVENT_SOURCING](TESTING_EVENT_SOURCING.md) | Given/when/then command tests, replay tests, fault tests, tests as documentation |
 | [PROPERTY_BASED_TESTING](PROPERTY_BASED_TESTING.md) | Invariants, generators, shrinking; PropEr and StreamData; stateful models |
+| [FAULT_INJECTION](FAULT_INJECTION.md) | Killing processes, cleanup assertions, wait_for_passing |
 
 ## One-page summary
 

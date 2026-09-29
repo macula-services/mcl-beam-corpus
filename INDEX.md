@@ -27,6 +27,9 @@ mesh is built on.
 | [README](beam/README.md) | The BEAM in one page: processes, scheduling, memory |
 | [SUPERVISION_TREES](beam/SUPERVISION_TREES.md) | Failure model, supervisor strategies, child specs, DynamicSupervisor |
 | [APPLICATIONS](beam/APPLICATIONS.md) | The composition unit: resource files, start types, dependencies |
+| [GENSERVER](beam/GENSERVER.md) | The stateful process: callbacks, the boundary shape, call vs cast |
+| [TASKS_AND_AGENTS](beam/TASKS_AND_AGENTS.md) | One-shot async work, simple state, the hierarchy of choosing |
+| [REGISTRY](beam/REGISTRY.md) | Naming processes: unique/duplicate keys, the via pattern |
 | [ETS](beam/ETS.md) | In-memory tables: types, ownership, what it is and is not for |
 | [SCHEDULER](beam/SCHEDULER.md) | The m:n model, reductions, concurrency vs parallelism |
 | [DISTRIBUTION](beam/DISTRIBUTION.md) | Location transparency, nodes, EPMD, the cookie |
@@ -69,6 +72,8 @@ The write model, the read models, and everything between.
 | [PROJECTIONS](event-sourcing/PROJECTIONS.md) | Simple, updating, inserting, batched; replay vs live |
 | [CHECKPOINTS](event-sourcing/CHECKPOINTS.md) | Memory, file, database, stream, shared, consensus |
 | [SAGAS_AND_PROCESS_MANAGERS](event-sourcing/SAGAS_AND_PROCESS_MANAGERS.md) | The distinction; versioning long processes |
+| [AGGREGATES](event-sourcing/AGGREGATES.md) | The consistency boundary: hydration, aggregate root, invariants |
+| [DOMAIN_MODELING](event-sourcing/DOMAIN_MODELING.md) | Bounded contexts, entities vs value objects, ubiquitous language |
 | [IDS_AND_CORRELATION](event-sourcing/IDS_AND_CORRELATION.md) | Message, causation, correlation, conversation ids |
 | [INTEGRATION_EVENTS](event-sourcing/INTEGRATION_EVENTS.md) | Denormalized contracts; aggregators; direct integration |
 | [STREAM_FORK_AND_JOIN](event-sourcing/STREAM_FORK_AND_JOIN.md) | Reindexing with link events; join ordering |
@@ -82,6 +87,7 @@ How to hold all of the above to a standard.
 | [README](testing/README.md) | The three highest-value test shapes |
 | [TESTING_EVENT_SOURCING](testing/TESTING_EVENT_SOURCING.md) | Given/when/then, replay tests, tests as documentation |
 | [PROPERTY_BASED_TESTING](testing/PROPERTY_BASED_TESTING.md) | Invariants, generators, shrinking, stateful models |
+| [FAULT_INJECTION](testing/FAULT_INJECTION.md) | Killing processes, cleanup assertions, wait_for_passing |
 
 ---
 

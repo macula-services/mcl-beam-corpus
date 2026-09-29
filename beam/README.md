@@ -20,6 +20,9 @@ notes are the reference for how that substrate works.
 |------|--------|
 | [SUPERVISION_TREES](SUPERVISION_TREES.md) | Failure model, supervisor strategies, child specs, DynamicSupervisor |
 | [APPLICATIONS](APPLICATIONS.md) | The composition unit: resource files, start types, dependencies |
+| [GENSERVER](GENSERVER.md) | The stateful process: callbacks, the boundary shape, call vs cast |
+| [TASKS_AND_AGENTS](TASKS_AND_AGENTS.md) | One-shot async work, simple state, the hierarchy of choosing |
+| [REGISTRY](REGISTRY.md) | Naming processes: unique/duplicate keys, the via pattern |
 | [ETS](ETS.md) | In-memory tables: types, ownership, what it is and is not for |
 | [SCHEDULER](SCHEDULER.md) | The m:n model, reductions, concurrency vs parallelism |
 | [DISTRIBUTION](DISTRIBUTION.md) | Location transparency, nodes, EPMD, the cookie |
