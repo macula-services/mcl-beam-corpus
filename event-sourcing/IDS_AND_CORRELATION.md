@@ -7,94 +7,81 @@ stage: stable
 
 # Event Sourcing: Ids and Correlation
 
-*Four ids on every message answer the two hardest questions in a messaging system: "what is this?" and "how did I get here?"*
+*A few ids in every message's metadata let you deduplicate deliveries, trace what caused what, and gather everything that belongs to one piece of work.*
 
 ---
 
-## The four ids
+## The ids
 
-| Id | Identifies | Copied or new? | Answers |
-|----|-----------|----------------|---------|
-| **Message id** | One message, uniquely | New per message | "Has this been processed?" (deduplication) |
-| **Causation id** | The message that *caused* this one | Set to the parent's message id | "What directly caused this?" |
-| **Correlation id** | One workflow (one logical operation) | Copied from the message being responded to | "Which conversation is this part of?" |
-| **Conversation id** | One conceptual thing, across many workflows | Usually a domain id (an order id) | "What happened with this thing, overall?" |
+| Id | Identifies | How it is set | Question it answers |
+|----|-----------|---------------|---------------------|
+| **Message id** | This message | Fresh for every message | Have I already handled this? |
+| **Causation id** | The message that directly led to this one | The triggering message's *message id* | What caused this? |
+| **Correlation id** | One workflow | Copied unchanged from the triggering message | Which piece of work is this part of? |
+| **Conversation id** (optional) | One business thing across several workflows | Usually a domain id, such as an order id | Everything that ever happened about this thing? |
 
----
+The message/correlation/causation trio is a widespread convention in
+event-sourced systems, often credited to Greg Young; "correlation
+identifier" itself is an older messaging pattern (Hohpe and Woolf).
 
-## Message id — the deduplication anchor
+## Message id and deduplication
 
-Every message carries a unique id, normally a UUID. It is what makes
-at-least-once delivery safe: without it, a receiver cannot know whether it
-has already processed a message.
+Most transports deliver at least once, so a handler will occasionally
+see the same message twice. A unique message id (a UUID, or a stream
+name plus version) lets it recognise the repeat.
 
-Ids can be built *from message content* — three servers producing the same
-internal message then generate the same id, and receivers that see the
-message three times process it once. Cheap availability gain; the cost is
-having to prove the system is actually idempotent.
+A useful variation is to derive the id deterministically from the
+message's content and origin. If two redundant producers emit the same
+logical message, they produce the same id and consumers handle it once.
+That only helps if consumers really deduplicate, so treat it as a
+property to test, not assume.
 
----
-
-## Causation id — the causal chain
-
-`FooOccurred` has message id `43e9…`. A service reacts, producing
-`BarOccurred`: it copies the correlation id and sets causation id to
-`43e9…` — the message id of what caused it.
-
-Chained across services, causation ids let you answer **"how did I get
-here?"** by reconstructing the causal graph of a conversation.
-
----
-
-## Correlation id — the conversation
-
-Every message carries a correlation id; anything responding to a message
-copies it onto its own messages. All messages of one workflow share one
-id:
+## Causation and correlation, by example
 
 ```
-OrderAccepted { correlationId: "7d03…" }
-OrderPaid     { correlationId: "7d03…" }
-OrderPicked   { correlationId: "7d03…" }
-OrderShipped  { correlationId: "7d03…" }
+PlaceOrder        msg=a1  corr=a1  cause=none  (first message: corr = its own id)
+OrderPlaced       msg=b2  corr=a1  cause=a1
+ReserveStock      msg=c3  corr=a1  cause=b2
+StockReserved     msg=d4  corr=a1  cause=c3
+ChargeCard        msg=e5  corr=a1  cause=b2
 ```
 
-Subscribing to a correlation id is subscribing to everything about this
-one operation — a topic created implicitly by the id.
+The rule for any handler is mechanical: new message id, copy the
+correlation id, set causation id to the id of the message being handled.
 
----
+- **Filter by correlation id** to get every message of one workflow.
+- **Follow causation ids** to rebuild the tree of what triggered what
+  (here, `OrderPlaced` fanned out into two branches).
 
-## Conversation id — when one correlation id is not enough
+## When one workflow is not enough
 
-Some conceptual operations produce many workflows: a warehouse order
-splits into three processes — direct fulfilment, a firearm approval, a
-substitution. Each gets its own correlation id; all share the order's
-**conversation id**.
+Some business things spawn several independent workflows: an order
+might need a stock reservation, a separate age check for one item, and a
+later replacement shipment. Each has its own correlation id. A
+conversation id, normally just the order id, ties them together so that
+a support screen or a monitor sees the full life of the order, including
+workflows started days later.
 
-Rules of thumb:
+## Worth building
 
-- The conversation id is almost always a **domain identifier** (an order
-  id), because the question it answers is asked by people: "what happened
-  with *this thing*?"
-- Subscribe monitors and external viewers to the **conversation id**, not
-  the correlation id — then sub-processes created later are still seen.
-- Customer service is the canonical consumer: one screen, the whole
-  lifecycle of the thing, across every split and follow-up order.
+Two cheap visualisations from the same metadata:
 
-(Microsoft Service Broker calls the same idea a "conversation group".)
+1. **Per-workflow graph**: messages with one correlation id as nodes,
+   causation ids as edges. The answer to "how did we get here?".
+2. **Aggregate flow map**: sample many correlation ids, merge their
+   graphs by message type, weight edges by frequency. A picture of what
+   production actually does.
 
----
+## On the BEAM
 
-## The visualisations — build them
+Put the ids in the event envelope's metadata, not in the payload, and
+set them in one place (the command dispatcher and each handler's
+emit helper) so nobody has to remember. Put the correlation id into
+Logger metadata (`Logger.metadata(correlation_id: id)`) at the start of
+each handler so logs can be joined to the event graph.
 
-Two graphs are cheap to generate and change how teams talk about the
-system:
+## Sources
 
-1. **Conversation graph** (filter by correlation id, connect by causation
-   id): the message flow of one conversation, "how did I get here?"
-   answered visually.
-2. **Flow overview** (10,000 correlation ids, line thickness = frequency):
-   the high-level map of what happens in production, one screen.
-
-Both are just graphs over two ids. The second one especially replaces
-hours of whiteboard archaeology with a glance.
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Robert Pankowecki, "Correlation id and causation id in evented systems", Arkency blog (free; quotes Greg Young's description of the convention). https://blog.arkency.com/correlation-id-and-causation-id-in-evented-systems/
+- Gregor Hohpe and Bobby Woolf, "Correlation Identifier", Enterprise Integration Patterns (free pattern page). https://www.enterpriseintegrationpatterns.com/patterns/messaging/CorrelationIdentifier.html

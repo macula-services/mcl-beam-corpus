@@ -7,102 +7,107 @@ stage: stable
 
 # Event Sourcing: Integration Events
 
-*Internal events are your privates. Integration events are the denormalized, versioned contract you publish for other services.*
+*Domain events are an internal detail of one bounded context. Integration events are the deliberately designed, versioned contract that context offers everyone else.*
 
 ---
 
-## Internal vs integration
+## Two kinds of event
 
-An internal event names ids:
+Inside a context, events are shaped for the context's own aggregates and
+projections. They refer to other things by id and change whenever the
+model changes:
 
+```elixir
+%SeatReserved{show_id: "sh-77", seat_id: "B-12", customer_id: "cust-981"}
 ```
-ItemMoved { productId: "24728347", from: "17", to: "28" }
-```
 
-The integration event for the same fact is denormalized — the consumer
-gets the human-readable state it needs, not a join exercise:
+A consumer in another context usually cannot do anything with bare ids
+without calling back. The integration event for the same fact carries
+what an outsider needs, in terms the outsider understands:
 
-```
-ItemMoved {
-  productId: "24728347", productName: "Peanut Butter", productSize: "16 oz",
-  productLabel: "Jif Reduced Salt Peanut Butter", productBrand: "Jif",
-  locationFromId: 17, locationFrom: "North Carolina Central Warehouse",
-  locationToId: 28,   locationTo: "New York City Warehouse 2"
+```elixir
+%{
+  type: "box_office.seat_reserved", version: 2,
+  show: %{id: "sh-77", title: "The Tempest", starts_at: "2026-10-03T19:30:00Z"},
+  seat: %{id: "B-12", row: "B", number: 12, zone: "stalls"},
+  customer_id: "cust-981"
 }
 ```
 
-The typical shape: an **adapter** listens to internal events, denormalizes
-data onto them, and publishes integration events to the outside. Several
-adapters publishing different versions of the same integration event is
-normal.
-
----
+The usual mechanism is an **adapter** (an event handler or process
+manager) that subscribes to internal events, enriches them
+from its own read models, and publishes the integration event. Several
+adapters publishing several versions of the same fact at once is normal.
 
 ## Two rules
 
-1. **Do not show others your privates.** Internal events are volatile —
-   they exist to support your use cases and change as those change.
-   Publishing them directly makes every consumer break on every internal
-   refactor.
-2. **Think forward.** An integration event may have 50-100 systems
-   subscribed. Schema changes are not made; a **new** integration event is
-   published alongside, and the old one deprecated over time (deprecation
-   spans weeks to 5+ years, per organisation). Content-type negotiation
-   for event bodies quickly earns its keep.
+1. **Keep internal events private.** Publishing them directly couples
+   every consumer to your internal model, and every refactor becomes a
+   cross-team negotiation.
+2. **Design for a long life.** A popular integration event may have many
+   subscribers on release cycles you do not control. Do not change a
+   published schema in a breaking way; publish a new version alongside
+   the old one and retire the old one on an announced schedule.
 
----
+## Coarser contracts: the aggregator
 
-## Event aggregator
+Some consumers do not care about every fine-grained step; they want
+"the current state of this order". An **event aggregator** listens to
+the detailed events and publishes one summary event, carrying the latest
+state, whenever anything relevant changes. The consumer integrates with
+one schema instead of a dozen.
 
-Not every consumer should understand every event. An **event aggregator**
-watches the fine-grained internal events and publishes one coarse
-"OrderUpdated"-style document carrying the current state:
+A variation publishes only a small notification with a link, and lets
+the consumer fetch the state:
 
-```
-OrderPlaced → FoodCooked → OrderPriced → OrderPaid
-                        ↓ aggregator
-        OrderUpdated { table: 2, total: 22.00, tip: 5.00, ... }
-```
-
-The consumer integrates with one contract instead of a stream of schemas.
-
----
-
-## Negotiating event aggregator
-
-Instead of embedding the state in the aggregated event, publish a **URI**
-and let consumers negotiate the form:
-
-```
-FoodCooked { id: "24728347", uri: "https://mydomain.com/aggregator/24728347" }
+```elixir
+%{type: "box_office.order_changed", order_id: "ord-4410",
+  href: "https://box-office.example/orders/ord-4410"}
 ```
 
-The consumer fetches with content negotiation — format (JSON/XML) and,
-critically, **version** — and the server converts to the version the client
-prefers. Old versions stay supported, so hundreds of subscribers on
-different update cycles never need to upgrade in lockstep. The explicit
-questions: how long do we support a version, and what are the consumers'
-release cycles?
+The consumer then asks for the representation and version it
+understands (HTTP content negotiation), and the provider converts. That
+decouples version upgrades: each consumer moves when it is ready. The
+trade-off is an extra round trip and a provider that must stay available
+to serve reads. This is the notification-versus-state-transfer choice
+Martin Fowler describes.
 
----
+## Direct subscription and its limits
 
-## Direct event integration — and its ceiling
+The simplest integration is for context A to subscribe straight to
+context B's events. With a handful of services and low volume that is
+fine. It breaks down organisationally rather than technically: once
+dozens of services subscribe to each other, nobody can say who depends
+on what, chains of reactions are invisible, and every change needs many
+teams.
 
-The simplest integration: service A listens to B's events and acts on
-them. Perfectly fine while the service count is small and event volume
-low. It fails as a complexity problem, not a performance one: at thirty
-services, "who listens to what" becomes unmanageable, event chains become
-invisible, and cross-team change coordination dominates.
-
-It stays right in one classic case: **a single dataset nearly everything
-needs** — market data in any financial institution. There, everyone
-integrates with the one feed, levels and SLAs and all, because the data
-is material to almost everything.
+One situation where broad direct subscription stays sensible: a single
+dataset that almost everyone needs (a price feed, a product catalogue).
+Then a single well-documented feed is simpler than many adapters.
 
 ## Choosing
 
-- Few services, low volume → direct integration, simplest thing that works.
-- External consumers with their own update cycles → aggregator, then
-  negotiating aggregator when versioning becomes the pain.
-- The moment "who listens to what" needs a diagram that nobody can draw
-  from memory, the direct approach has already stopped scaling.
+In the wider industry the choice runs:
+
+- Few services, low volume: direct subscription.
+- Many consumers or outside consumers: explicit integration events from
+  an adapter, versioned from day one.
+- Consumers that only need current state, on independent release
+  cycles: an aggregator, possibly notification-plus-fetch.
+
+Macula codebases take the second option always. Domain events stay in
+their context's store; a process manager (`on_{event}_{action}`)
+decides what to publish as an integration fact on the mesh, with its own
+public schema. No context subscribes to another context's domain
+events, however small the system.
+
+See also [DOMAIN_MODELING](DOMAIN_MODELING.md) for bounded contexts and
+[IDS_AND_CORRELATION](IDS_AND_CORRELATION.md) for the metadata every
+integration event should carry.
+
+## Sources
+
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Martin Fowler, "What do you mean by 'Event-Driven'?", martinfowler.com, 2017 (free). https://martinfowler.com/articles/201701-event-driven.html
+- Microsoft patterns & practices, *Exploring CQRS and Event Sourcing* (Reference 5, "Communicating between Bounded Contexts"), 2012 (free online). https://learn.microsoft.com/en-us/previous-versions/msp-n-p/jj554200(v=pandp.10)
+- Microsoft, "Event Sourcing pattern" (note on integration events), Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing

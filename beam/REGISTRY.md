@@ -7,79 +7,77 @@ stage: stable
 
 # BEAM: Registry
 
-*A local, decentralized way to name processes: register a key, look it up by key. No global name server, no single point of failure.*
+*Elixir's local key-to-process directory: name processes with any term, find them without going through a single server.*
 
 ---
 
-## What it solves
+## The problem it solves
 
-Processes need to find each other. Options:
+A pid is only good while its process lives; after a restart the
+supervisor hands out a new one. So callers need a stable name. The BEAM
+offers several naming mechanisms:
 
-| Approach | Shape | Problem |
-|----------|-------|---------|
-| Pass pids around | `Counter.tick(pid)` | Pids die with the process; callers hold stale values |
-| Global name registration | `Process.register/2`, `:global` | One name per atom, one registry per node (or cluster-wide churn) |
-| **Registry** | `Registry.lookup(MyRegistry, key)` | Many registries, per-node, keyed by any term |
+| Mechanism | Keys | Scope | Limitation |
+|-----------|------|-------|------------|
+| `Process.register/2` / `name: MyMod` | atoms | one node | atoms are never garbage collected, so they must not be minted from runtime data |
+| `:global` | any term | whole cluster | cluster-wide locking on registration; costly at scale |
+| `Registry` (Elixir) | any term | one node | local only |
+| `:pg` | any term (group names) | cluster | groups, not unique names; eventually consistent |
 
-A Registry is a process that maps keys to pids — and it is not
-fragile: lookups do not involve the registry process itself, and it
-works with ETS under the hood.
+`Registry` is the right default for "one process per user, session,
+device or job" on a single node.
 
 ---
 
-## Using it
+## How it works
+
+A registry is started under your supervision tree and is backed by ETS
+tables, optionally split into partitions for concurrency. A process
+registers **itself** (`Registry.register/3` always acts on the calling
+process). When a registered process exits, its entries are removed
+automatically; the docs note the removal may not be visible
+immediately.
 
 ```elixir
-Registry.start_link(keys: :unique, name: MyRegistry)   # part of the app tree
+# in the application's children list
+{Registry, keys: :unique, name: Devices.Registry}
 
-{:ok, _} = Registry.register(MyRegistry, "session-42", %{user_id: 7})
-[{pid, meta}] = Registry.lookup(MyRegistry, "session-42")
-Registry.unregister(MyRegistry, "session-42")
+# name a GenServer by a runtime key
+GenServer.start_link(Devices.Link, serial,
+  name: {:via, Registry, {Devices.Registry, serial}})
+
+# address it later by the same key
+GenServer.call({:via, Registry, {Devices.Registry, "A7-1182"}}, :status)
+Registry.lookup(Devices.Registry, "A7-1182")   #=> [{pid, value}] or []
 ```
 
-| `keys:` | Behaviour |
-|---------|-----------|
-| `:unique` | One process per key — the typical case |
-| `:duplicate` | Many processes per key — e.g. all handlers of an event type |
+| `keys:` | Meaning | Typical use |
+|---------|---------|-------------|
+| `:unique` | at most one process per key | naming workers |
+| `:duplicate` | many processes per key | local pub/sub, dispatch to all subscribers |
 
-The value stored with `register/3` (the metadata) rides along in
-lookups — no second call needed.
+The value stored at registration (also settable through the three-element
+via tuple `{:via, Registry, {reg, key, value}}`) comes back with every
+lookup.
 
 ---
 
-## The via pattern
+## Pitfalls
 
-OTP name registration accepts `{:via, Registry, {reg, key}}`:
+- **Local only.** A key resolves on the node that holds the registry.
+  Across nodes use `:pg`, `:global`, or a design that routes to the
+  owning node.
+- **A lookup is a snapshot.** The process can exit right after you get
+  its pid. Treat `[]` and a dead pid as ordinary outcomes.
+- **Register through `name:` at start**, so the name exists exactly as
+  long as the process and restarts re-register automatically.
+- **Separate registries per concern** keep keyspaces apart and make
+  intent obvious.
 
-```elixir
-GenServer.start_link(Mod, arg, name: {:via, Registry, {MyRegistry, "session-42"}})
-```
+Related: [GENSERVER](GENSERVER.md), [SUPERVISION_TREES](SUPERVISION_TREES.md), [ETS](ETS.md), [DISTRIBUTION](DISTRIBUTION.md).
 
-Now the process is reachable by key through every OTP API that accepts
-a name — supervisors, `GenServer.call`, `Process.whereis`. The name
-lives in the Registry, not in the atom table, so keys can be created
-and destroyed freely.
+## Sources
 
----
-
-## Choosing between the three
-
-| Need | Use |
-|------|-----|
-| Static, few, known-at-compile-time names | `Process.register` / module names |
-| Dynamic keys, one node, created at runtime | `Registry` |
-| Names that must resolve across nodes | `:global` (or `pg` for groups) |
-
-## Rules of thumb
-
-- **One Registry per purpose.** Session ids, event handlers, workers —
-  separate registries, separate keyspaces, no collisions between
-  concerns.
-- **Register in `init/1`**, via the `name:` option where possible:
-  the name exists exactly as long as the process, no stale entries.
-- **Registry is per-node.** It is not a distributed name server; a key
-  resolves on the node where the process lives. For cross-node
-  discovery, pair it with `pg` or `:global`.
-- **Lookup, then handle the miss.** A lookup can race the process
-  exit; `[]` (or a dead pid) is a normal result, not an error — the
-  caller treats "not there" as "go elsewhere or retry".
+- *Designing Elixir Systems with OTP*, 1st edition, James Edward Gray II and Bruce A. Tate, Pragmatic Bookshelf, 2019. <https://pragprog.com/titles/jgotp/designing-elixir-systems-with-otp/>
+- Elixir `Registry` documentation. <https://elixir.hexdocs.pm/Registry.html>
+- Erlang/OTP `pg` reference. <https://www.erlang.org/doc/apps/kernel/pg.html>

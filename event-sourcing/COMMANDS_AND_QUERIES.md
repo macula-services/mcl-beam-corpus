@@ -7,58 +7,83 @@ stage: stable
 
 # Event Sourcing: Commands and Queries
 
-*Commands change state and return nothing but status. Queries return data and change nothing. The split is CQRS in one sentence.*
+*A command asks the system to change and answers only "done" or "refused". A query answers a question and changes nothing. Keeping the two apart is the idea CQRS is built on.*
 
 ---
 
-## Command
+## The principle underneath
 
-A **command** is a message that represents an action that changes system
-state. Think of it as a serialized method call: the name of the behaviour to
-invoke plus its parameters.
+Bertrand Meyer's command-query separation (CQS) says a method should
+either change state or return information, not both. CQRS applies the
+same split to whole messages and, eventually, to whole models
+(see [CQRS](CQRS.md)).
 
-- Named in the **imperative**: `PayFare`, `MoveItem`, `DeactivateItem`.
-- Carries a message id (for deduplication) plus the parameters.
-- Generally synchronous: returns **success or error** to the caller.
+## Commands
+
+A command is a request to perform a business action. It is named in the
+imperative, carries the data the action needs, and has a unique id so
+that a retried delivery can be recognised:
 
 ```elixir
-%MoveItem{id: "24728347", from: "17", to: "28"}
+%ReserveSeat{command_id: "c7f1…", show_id: "2026-10-03-evening", seat_id: "B-12", customer_id: "cust-981"}
 ```
 
-**The rule people get wrong:** a command returns a status, not data. The
-largest recurring mistake in CQRS systems is having commands return domain
-information. Exceptions exist, but the default is status-only — the client
-reads results through queries afterwards.
+What a command handler gives back is an outcome, not a view of the
+domain:
 
----
+```elixir
+:ok
+{:error, :seat_already_taken}
+```
 
-## Query
+The caller learns *whether* it worked. If it needs to see the result, it
+asks a query afterwards (or reads the events the command produced).
+Returning domain data from commands is the most common way the split
+erodes: soon clients depend on the write model's shape and the read side
+can no longer evolve on its own. There are pragmatic exceptions, such as
+returning the id or new stream version of what was just written, but
+treat them as exceptions.
 
-A **query** is a message that reads information without mutating business
-state. `GetCustomer id=1234` → a customer DTO.
+A command may be refused. Zero events is a valid, ordinary outcome.
 
-- "Does not mutate state" is a *conceptual* rule: logging the query for
-  load analysis is fine; changing domain state is not.
-- Usually exposed over HTTP: `GET /customers/4`. HTTP buys two things for
-  free: **content-type negotiation** (JSON vs XML vs CSV per client) and
-  **versioning** (a client on DTO v2 asks for v2 while others use v4).
+## Queries
 
-**Versioning discipline.** Deprecate old versions over time instead of
-breaking consumers; a client asking for version 3 when the system is at
-version 23 needs a well-thought-out deprecation strategy, not silent
-support forever.
+A query asks for information and must not change business state:
 
----
+```elixir
+%SeatsAvailable{show_id: "2026-10-03-evening"}
+# => [%{seat_id: "A-01", price_cents: 2400}, …]
+```
 
-## The pairing
+"Must not change state" is about the domain. Logging, metrics and caches
+touched while answering are fine.
 
-| | Mutates state | Returns data |
-|---|---|---|
-| Command | yes | no (status only) |
-| Query | no | yes |
+Queries are served from read models built for them
+([PROJECTIONS](PROJECTIONS.md)), never by folding the event store on the
+request path. Because readers differ, the read side is also where you
+offer several representations (JSON, CSV) and several versions of a
+response. Retire old versions deliberately, with a published deprecation
+window, rather than supporting every version forever or breaking
+clients without warning.
 
-If a call mutates state, it does not return domain data. If it returns
-data, it does not mutate state. This invariant is what makes a CQRS split
-safe to reason about: a call that returns a value can be assumed pure.
+## Side by side
 
-See [CQRS](CQRS.md).
+| | Changes business state | Returns domain data | May be refused |
+|---|---|---|---|
+| Command | yes | no, an outcome only | yes |
+| Query | no | yes | only for access or validation reasons |
+
+## On the BEAM
+
+A natural shape is `GenServer.call/3` to the aggregate process for a
+command, returning `:ok | {:error, reason}`, and a direct read of an ETS
+table or SQL read model for a query, which never goes through the
+aggregate process at all. That keeps slow or heavy reads from queueing
+behind writes in a process mailbox.
+
+## Sources
+
+- Greg Young, *CQRS Documents*, self-published PDF, 2010 (free). https://cqrs.wordpress.com/wp-content/uploads/2010/11/cqrs_documents.pdf
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Martin Fowler, "Command Query Separation", martinfowler.com, 2005 (free). https://martinfowler.com/bliki/CommandQuerySeparation.html
+- Microsoft, "CQRS pattern", Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs

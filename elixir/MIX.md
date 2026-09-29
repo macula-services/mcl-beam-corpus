@@ -13,29 +13,30 @@ stage: stable
 
 ## The project layout
 
-```
+```text
 my_app/
 ├── mix.exs          # project definition: version, deps, application config
 ├── lib/             # application source
 ├── test/            # ExUnit tests
-├── config/          # config.exs + environment configs
-└── priv/            # runtime assets, NIF binaries
+├── config/          # config.exs, per-environment files, runtime.exs
+└── priv/            # runtime assets, migrations, NIF binaries
 ```
 
 `mix.exs` defines the project in `project/0`, the application in
-`application/0`, and the dependencies in `deps/0`:
+`application/0` (from which Mix writes the `.app` resource file, see
+[APPLICATIONS](../beam/APPLICATIONS.md)), and dependencies in `deps/0`:
 
 ```elixir
 def project do
-  [app: :my_app, version: "0.1.0", deps: deps()]
+  [app: :my_app, version: "0.1.0", elixir: "~> 1.17", deps: deps()]
 end
 
 def application do
-  [mod: {MyApp, []}, extra_applications: [:logger]]
+  [mod: {MyApp.Application, []}, extra_applications: [:logger]]
 end
 
 defp deps do
-  [{:httpoison, "~> 2.0"}]
+  [{:jason, "~> 1.4"}]
 end
 ```
 
@@ -45,51 +46,59 @@ end
 
 | Task | Does |
 |------|------|
-| `mix new` | Scaffold a project (add `--sup` for the supervision tree) |
-| `mix deps.get` | Fetch and lock dependencies (`mix.lock`) |
-| `mix compile` | Compile with parallelisation and incremental recompiles |
+| `mix new` | Scaffold a project (`--sup` adds an application callback and supervisor) |
+| `mix deps.get` | Fetch dependencies and record resolved versions in `mix.lock` |
+| `mix compile` | Incremental compilation; also consolidates protocols ([PROTOCOLS](PROTOCOLS.md)) |
 | `mix test` | Run ExUnit |
-| `mix format` | The opinionated formatter — run it, never argue with it |
-| `mix xref` | Cross-reference checks: unused deps, undefined calls |
+| `mix format` | Apply the standard formatter; `--check-formatted` for CI |
+| `mix xref` | Inspect the dependency graph between modules (`mix xref graph`, `callers`) |
+| `mix deps.unlock --check-unused` | Fail if the lockfile holds dependencies no longer used |
 | `mix release` | Assemble a self-contained OTP release |
-| `mix escript.build` | Build a single-file CLI executable |
+| `mix escript.build` | Build a single-file executable (needs Erlang installed to run) |
 
-Custom tasks are modules named `Mix.Tasks.X` with a `run/1` — they are
-how repos script themselves (`mix ecto.migrate`).
+Custom tasks are modules named `Mix.Tasks.Something` that `use Mix.Task`
+and implement `run/1`; that is how libraries add commands such as
+`mix ecto.migrate`.
 
 ---
 
 ## Releases
 
-`mix release` bundles the ERTS, all applications, and the runtime
-config into a directory that runs with **no source and no installed
-runtime**:
+`mix release` bundles the Erlang runtime (ERTS, included by default),
+all applications and their compiled code into a directory that runs
+without Elixir or Erlang installed on the target:
 
-```
-_build/prod/rel/my_app/
-└── bin/my_app start | stop | restart | remote
+```text
+_build/prod/rel/my_app/bin/my_app start | start_iex | daemon | remote | rpc | eval | stop | restart | pid | version
 ```
 
-`bin/my_app remote` attaches an IEx shell to the running node — the
-standard operator's door into production. Add `:runtime_tools` to
-`extra_applications` to make `:observer` work against the release.
+`bin/my_app remote` opens an IEx shell connected to the running node,
+the usual operator entry point. `config/runtime.exs` is evaluated when
+the release boots, which is where environment variables and secrets
+are read (`System.fetch_env!/1`); build-time config files are baked in.
+Releases built with Mix do not support hot code upgrades out of the box
+([HOT_CODE_UPGRADES](../beam/HOT_CODE_UPGRADES.md)).
 
 ---
 
 ## Rules of thumb
 
-- **Lock the deps.** `mix.lock` is committed for applications; it is
-  what makes a build reproducible.
-- **Config belongs in `config/`, not in code.** `System.fetch_env!`
-  for secrets — never bake them into the release.
-- **`mix format` in CI.** The formatter ends style debates; the CI
-  check keeps the tree formatted.
-- **Custom tasks stay thin.** A task parses args and calls a module; it
-  is glue, not logic — the logic must be testable without the CLI.
+- **Control versions through constraints.** The wider Elixir convention
+  is to commit `mix.lock` for applications. Macula repositories do not
+  commit BEAM lockfiles (`mix.lock`, `rebar.lock`): versions are
+  controlled by the constraints in `deps/0`, and a lock is never edited
+  by hand. The consequence is that a fresh build can resolve newer
+  matching versions, so a runtime result proves only the build that
+  produced it; check what a tagged build actually bundled.
+- **Secrets at runtime, never at build time.** Read them in
+  `config/runtime.exs`, not in `config/config.exs` or module attributes.
+- **`mix format --check-formatted` in CI** ends style debates.
+- **Custom tasks stay thin.** Parse arguments, call a module; the logic
+  must be testable without the CLI.
 
-## Why it matters
+## Sources
 
-mix is how an Elixir project goes from `mix new` to a release that
-runs on a fleet node. Every convention above — lockfile, config
-directory, formatter, release — exists so that "how does this build?"
-has one answer per project, not one per developer.
+- Mix documentation. <https://mix.hexdocs.pm/Mix.html>
+- Mix `mix release` documentation. <https://mix.hexdocs.pm/Mix.Tasks.Release.html>
+- Mix `mix deps.get` documentation. <https://mix.hexdocs.pm/Mix.Tasks.Deps.Get.html>
+- Elixir `Application` documentation (Mix-generated resource file). <https://elixir.hexdocs.pm/Application.html>

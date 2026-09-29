@@ -7,80 +7,84 @@ stage: stable
 
 # Erlang: Parse Transforms
 
-*Erlang's metaprogramming: a module that rewrites another module's AST at compile time. Powerful, and mostly how libraries get it wrong.*
+*A parse transform is a module the compiler calls to rewrite another module's syntax tree before checking and code generation. It is Erlang's most powerful metaprogramming tool and the one OTP advises against.*
 
 ---
 
 ## What it is
 
-A **parse transform** is a module run by the compiler *between* parsing
-and code generation. It receives the forms (the abstract syntax tree) of
-the module being compiled and returns a transformed list of forms:
+When the compiler has parsed a module into its **abstract format** (a
+list of forms: attributes and function definitions as nested tuples), it
+passes that list to each requested parse transform. A transform is any
+module exporting `parse_transform/2`:
 
 ```erlang
--module(my_transform).
+-module(stamp_transform).
 -export([parse_transform/2]).
 
+%% Add an exported build_info/0 returning the compile time.
 parse_transform(Forms, _Options) ->
-    transform(Forms).
+    Stamp = calendar:system_time_to_rfc3339(erlang:system_time(second)),
+    Fun = {function, 0, build_info, 0,
+           [{clause, 0, [], [], [erl_parse:abstract(Stamp)]}]},
+    {Body, [Eof]} = lists:split(length(Forms) - 1, Forms),   % last form is {eof, _}
+    lists:flatmap(fun add_export/1, Body) ++ [Fun, Eof].
+
+add_export({attribute, _, module, _} = M) -> [M, {attribute, 0, export, [{build_info, 0}]}];
+add_export(F) -> [F].
 ```
 
-The module opts in with a compile attribute:
-
-```erlang
--compile({parse_transform, my_transform}).
-```
-
-From there the transform can inspect every function, add or remove
-forms, and inject helpers — the Erlang equivalent of Elixir macros, one
-level lower: Elixir macros compile down to the same abstract forms.
+A module opts in with `-compile({parse_transform, stamp_transform}).`
+(or the compiler option of the same name). The transform runs before
+the code is checked for errors, so it can accept code that would not
+compile on its own and turn it into code that does.
+`erl_id_trans` in STDLIB is the reference identity transform to start
+from.
 
 ---
 
-## What transforms are used for
+## What people use them for
 
 | Use | Example |
 |-----|---------|
-| Code generation | `lager_transform` rewrites log calls to inject the module/line metadata |
-| Wrapping calls | A transform can rewrite every remote call to add tracing or metric hooks |
-| DSLs | Parsing a domain language embedded in strings, emitting forms |
-| Deprecated-syntax migrations | Rewriting old constructs to new ones during upgrades |
-
-The famous production transform is `lager`'s: it rewrites
-`lager:info("...")` to pass `?MODULE` and `?LINE` implicitly — the
-same ergonomics Elixir macros deliver with `quote`.
+| Implicit call-site metadata | logging libraries (historically `lager`) rewriting log calls to add module, function and line |
+| Compile-time generation | adding functions derived from records or attributes |
+| Query DSLs | `ms_transform`, shipped with OTP, turns `ets:fun2ms(fun(...) -> ... end)` into a match specification |
+| Instrumentation | wrapping calls for tracing or metrics |
 
 ---
 
-## The costs
+## Costs
 
-- **Forms are a hostile API.** The abstract format is documented but
-  verbose; transforms are fiddly to write and test.
-- **Opaque compilation.** A transform can change anything about a
-  module; readers of the source cannot see what runs.
-- **Ordering hazards.** Multiple transforms compose in declaration
-  order; interactions are a classic debugging swamp.
+- **OTP's own warning:** the `erl_id_trans` docs say programmers are
+  "strongly advised not to engage in parse transformations" and that no
+  support is offered for problems encountered.
+- **Invisible semantics.** The source no longer says what runs; readers,
+  tools and debuggers see different code.
+- **Fragile coupling to the abstract format,** which gains new node types
+  as the language evolves; a transform that does not handle them breaks
+  its users' builds.
+- **Ordering.** Several transforms are applied in sequence and can
+  interfere with each other.
 
 ## Rules of thumb
 
-1. **Reach for a macro/`-define` first.** Most metaprogramming needs in
-   Erlang are served by the preprocessor; a parse transform is the
-   last tool, for when you must rewrite *structure*.
-2. **Keep transforms total.** A transform that fails on forms it did
-   not anticipate breaks builds for everyone downstream — be
-   conservative about what you rewrite.
-3. **Name the dependency explicitly.** `-compile({parse_transform,
-   m})` makes the magic visible at the top of the module; never apply
-   transforms via build flags only.
-4. **When you have Elixir, you usually do not need transforms.** Macros
-   cover most of the same ground with far better ergonomics — parse
-   transforms remain the Erlang-only fallback.
+1. **Try the preprocessor first.** `-define` macros with `?MODULE`,
+   `?FUNCTION_NAME` and `?LINE` cover most call-site metadata needs
+   (OTP's `logger` macros do exactly this).
+2. **Pass through what you do not recognise,** unchanged, so new syntax
+   does not break the transform.
+3. **Make the dependency visible** with a `-compile` attribute in the
+   module, not only a build-tool flag.
+4. **In Elixir, use macros instead.** They work on Elixir's AST with
+   hygiene and explicit `require` ([MACROS](../elixir/MACROS.md)).
 
-## Why it matters
+Related: [MODULES_AND_RECORDS](MODULES_AND_RECORDS.md).
 
-Parse transforms explain the gap between the two languages'
-metaprogramming stories: Elixir added a layer (`quote`/`unquote`) that
-makes code-as-data pleasant, while Erlang works the same machinery in
-raw abstract forms. Knowing the transform exists tells you what is
-happening when a library rewrites your code in Erlang — and why the
-advice is to avoid writing one.
+## Sources
+
+- *Erlang and OTP in Action*, 1st edition, Martin Logan, Eric Merritt and Richard Carlsson, Manning, 2010. <https://www.manning.com/books/erlang-and-otp-in-action>
+- Compiler `compile` reference (`{parse_transform, Module}` option). <https://www.erlang.org/doc/apps/compiler/compile.html>
+- STDLIB `erl_id_trans` reference (identity transform and warning). <https://www.erlang.org/doc/apps/stdlib/erl_id_trans.html>
+- ERTS, The Abstract Format. <https://www.erlang.org/doc/apps/erts/absform.html>
+- Erlang/OTP Reference Manual, Preprocessor (predefined macros). <https://www.erlang.org/doc/system/macros.html>

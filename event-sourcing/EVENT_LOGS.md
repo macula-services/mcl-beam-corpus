@@ -7,83 +7,92 @@ stage: stable
 
 # Event Sourcing: Event Logs
 
-*An event log is every event written to a log. An event stream is an ordered set of events. Event Sourcing is making the log the source of truth — a separate decision.*
+*Where events live. A log is the physical append-only record; a stream is the logical sequence of events for one thing. Choose the simplest log that meets your durability and scale needs.*
 
 ---
 
-## Log vs sourcing — do not conflate them
+## Log, stream, and sourcing
 
-- **Event Log**: every event the system produces is written to a log.
-- **Event Sourcing**: the log is *also* the primary source of truth for the
-  entire system.
+- An **event log** is the storage: records appended in order and never
+  modified.
+- An **event stream** is a named, ordered subset of events, typically
+  everything that happened to one aggregate (`reservation-4410`).
+- **Event sourcing** is the decision to treat the log as the source of
+  truth ([EVENT_SOURCING](EVENT_SOURCING.md)). You can keep a log without
+  making that decision, and still benefit from being able to replay it.
 
-There can very well be an event log without event sourcing — market-data
-systems have logged every tick for decades and replay the day's file to run
-new analyses — and that alone delivers value.
+## Kinds of log
 
----
+### A single append-only file
 
-## Implementations, from simple to heavy
+Serialise each event and append it to a file. For a desktop tool, an
+embedded device, or a service that holds only a few thousand events and
+can replay them at startup, this is a perfectly sound design. Its limits
+are size and continuous operation. If you rely on it, treat durability
+seriously: detect a torn final record after a crash (length prefix plus
+checksum), and `fsync` at the points where you promise the caller the
+event is safe.
 
-### Appending file event log
+### A segmented log
 
-Literally append events to a file. Not a joke: with hundreds to low
-thousands of events, a JSON file replays in under a second. Correct where
-the log is client-side, or the system has a natural "off" period (a trading
-system that runs 8 hours and closes the day). It fails at 24/7 scale.
+The log is split into fixed-size segment files. Only the newest segment
+is written; full segments are sealed and never change again. Sealed,
+immutable segments are what make the rest easy:
 
-Durability caveats for when events matter:
-- Handle partial writes (append, then write a checkpoint confirming the
-  write completed).
-- Disks lie about durability; test what you trust.
+- they can be copied, cached and replicated to readers without
+  coordination;
+- retention can work per segment: rewrite a sealed segment without the
+  records that have expired, then swap it in, and merge small leftovers;
+- they suit write-once storage.
 
-### Segmented event log
+Kafka's log segments and the chunk files of KurrentDB (formerly
+EventStoreDB) are well-known examples of this layout.
 
-The log is a series of fixed-size segments (EventStore defaults to 256 MB),
-filled one at a time. Once a segment is filled it becomes **immutable** —
-the property everything else builds on:
+### A replicated or distributed log
 
-- Write-once media works.
-- Immutable segments replicate trivially to many readers, geographically.
-- **Scavenging**: copy a segment, dropping expired data (e.g. records
-  older than two weeks), then swap it in. Old chunks losing 90% of data
-  get merged into larger files.
+The log is replicated across nodes for availability, via a consensus
+protocol such as Raft when the nodes trust each other, or via a
+Byzantine-tolerant protocol (a blockchain is one) when they do not. You
+gain availability and pay in latency and operational complexity. Most
+systems need a replicated log among trusted nodes at most, and many need
+less. On the BEAM, Raft-based stores built on `ra` (for example Khepri)
+are the usual route.
 
-### Distributed event log
+## Streams
 
-The log replicated across machines for availability, where the writers are
-not fully trusted — the blockchain is the famous instance. Highly available
-but with a significant complexity cost. **Gate this hard**: most systems
-never need it.
+Most reads and writes in an event-sourced system are per stream:
 
----
-
-## Event streams
-
-An **event stream** is an ordered set of events. Events are dealt with as
-members of a stream, not in isolation. All events for one aggregate live in
-one stream; hydrating the aggregate is replaying its stream.
-
-A stream is the primary partition point: typical systems have hundreds of
-thousands of streams. In an event-sourced system a stream is what a
-"document" is in a document database.
-
-The operations a stream supports, and what they enable:
-
-| Operation | Note |
+| Operation | Role |
 |-----------|------|
-| Create | Some stores auto-create on append (EventStore does) |
-| Append | The write path |
-| Read | Replay for hydration or rebuilding |
-| **Subscribe** | The defining operation: read models, other services, clients — all consume via subscription |
-| Delete | Often absent on purpose: no delete is a compliance *feature* |
+| Append (with expected version) | The write path, with optimistic concurrency |
+| Read forward from a position | Rehydrate an aggregate, rebuild a projection |
+| Subscribe | Receive new events as they are appended; how projections, process managers and other services are fed |
+| Delete / truncate | Often restricted or absent by design; where erasure is required, prefer keeping personal data out of events |
 
-A subscribe-capable store doubles as a message dispatcher, which is how
-most event-sourced systems move data between services.
+Streams are the natural partition key: a system may have millions of
+small streams, much as a document database has many documents. Many
+stores create a stream implicitly on its first append.
+
+Because a store that supports subscriptions pushes new events to
+interested parties, it frequently doubles as the messaging backbone
+between components.
 
 ## Choosing
 
-Start with the simplest log that works; the appending file is a completely
-reasonable first system. Move to segmented when immutability, scavenging
-or scaling matter. Reach for a distributed log only when availability with
-untrusted writers is a real requirement.
+1. Start with the simplest log that meets the durability requirement. A
+   file is a reasonable first system.
+2. Move to segments when you need retention, replication to readers, or
+   a history too large to rewrite.
+3. Move to a replicated log when losing a single node must not stop
+   writes. Reach for untrusted-writer designs only when the problem
+   really has untrusted writers.
+
+Related: [CHECKPOINTS](CHECKPOINTS.md) for how consumers remember where
+they are in a log, [STREAM_FORK_AND_JOIN](STREAM_FORK_AND_JOIN.md) for
+deriving new streams from existing ones.
+
+## Sources
+
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Martin Fowler, "Event Sourcing", martinfowler.com, 2005 (free). https://martinfowler.com/eaaDev/EventSourcing.html
+- Microsoft, "Event Sourcing pattern" (event store options), Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing

@@ -7,81 +7,90 @@ stage: stable
 
 # BEAM: ETS
 
-*Erlang Term Storage: an in-memory key-value store built into the runtime. Fast lookups and counters, owned by a process, invisible to the GC's cost model.*
+*Erlang Term Storage: in-memory tables built into the runtime. Fast shared lookups and atomic counters, owned by a process, stored outside process heaps.*
 
 ---
 
 ## What it is
 
-ETS is a set of in-memory tables storing Erlang terms, created by a
-process and accessed by any process (depending on protection). It is
-the BEAM's answer to "I need a cache, a counter, a lookup table" —
-without a database and without copying through message passing.
+ETS tables store tuples keyed on one element. A process creates a table
+and, depending on the access mode, other processes can read or write it
+directly, without a message round-trip to the owner. It is the BEAM's
+answer to "I need a cache, a counter, a lookup table" without a
+database and without funnelling every read through one process.
 
 | Property | Value |
 |----------|-------|
-| Speed | Constant-time lookups/hashes, very fast reads |
-| Storage | In memory; lost on owner exit unless an heir takes over |
-| Ownership | A process owns the table (or `:public`/`:protected` access) |
-| Scale | Not distributed — per node |
+| Speed | `set` tables: constant-time lookup; `ordered_set`: logarithmic |
+| Storage | In memory, outside process heaps, so not part of any process's garbage collection |
+| Copying | Every insert and every lookup copies the term (large binaries are reference-counted instead) |
+| Atomicity | Each update of a single object is atomic and isolated; there are no multi-operation transactions |
+| Scope | One node; not replicated |
 
 ---
 
 ## Ownership and lifetime
 
-A table is owned by the process that created it. When the owner dies,
-the table dies with it — unless an **heir** was named:
+The creating process owns the table. When the owner terminates the
+table is destroyed, unless an **heir** was named at creation:
 
 ```elixir
-:ets.new(:my_table, [:named_table, {:heir, heir_pid, :inherited_data}])
+:ets.new(:sessions, [:set, :public, :named_table, {:heir, keeper_pid, :sessions}])
 ```
 
-Use the heir for caches that should survive the owner's restart. The
-more common pattern is the opposite: let the table die with the process,
-and rebuild it on start — ETS data is derived data.
+The heir receives the table and an `{:"ETS-TRANSFER", tid, from, data}`
+message. The more common design is the opposite: treat ETS contents as
+derived data that is rebuilt when the owner restarts.
 
 ---
 
-## The table types
+## Table types and access
 
 | Type | Behaviour |
 |------|-----------|
-| `:set` | One row per key (default) |
-| `:ordered_set` | Sorted by key, ordered traversal |
-| `:bag` | Many rows per key |
-| `:duplicate_bag` | Many rows per key, duplicates allowed |
+| `:set` | one object per key (default) |
+| `:ordered_set` | one object per key, traversed in key order |
+| `:bag` | many objects per key, no identical duplicates |
+| `:duplicate_bag` | many objects per key, duplicates allowed |
 
-And the access modes: `:public` (any process), `:protected` (any process
-may read, only the owner writes — the default), `:private` (owner only).
+| Access | Who may read | Who may write |
+|--------|--------------|---------------|
+| `:protected` (default) | any process | owner only |
+| `:public` | any process | any process |
+| `:private` | owner only | owner only |
+
+`read_concurrency` and `write_concurrency` options tune locking for
+read-heavy or write-heavy tables.
 
 ---
 
-## What ETS is good at
+## Good uses
 
-- **Counters** — `:ets.update_counter/4` is atomic; concurrent increments
-  do not race. The idiomatic hit counter.
-- **Caches and registries** — lookup tables for config, sessions, routing.
-- **Cross-process shared state** — faster than `Agent`/`GenServer`
-  round-trips for read-heavy data.
+- **Counters:** `:ets.update_counter/3,4` increments atomically, so
+  concurrent writers do not race.
+- **Caches and lookup tables:** configuration, routing, session data.
+- **Read-mostly shared state:** readers proceed in parallel instead of
+  queuing on a [GenServer](GENSERVER.md). `Registry` is built on ETS
+  ([REGISTRY](REGISTRY.md)).
 
-## What ETS is not
+## Limits
 
-- **Not durable.** Node restart, table gone. Persist elsewhere.
-- **Not a database.** No transactions, no joins, no query language —
-  `:ets.match` patterns only.
-- **Not GC-free by magic.** Terms in ETS are copied on write; large
-  binaries are ref-counted. Know the cost model before storing millions
-  of rows.
-- **Not distributed.** A table lives on one node; replicating it is your
-  problem (Mnesia builds on ETS for this).
+- **Not durable.** A node restart loses everything. (DETS and Mnesia
+  add disk storage.)
+- **Not a query engine.** Lookups by key, plus `match`/`select` with match
+  specifications; no joins, no multi-key transactions.
+- **Copy cost.** Storing or fetching large terms copies them every time.
+- **Not distributed.** Replication is your problem (Mnesia builds on ETS
+  for that).
 
 ## Rules of thumb
 
-- Prefer ETS over a `GenServer` holding a map when reads dominate: the
-  `GenServer` serialises every read through one process; ETS lets all
-  readers proceed in parallel.
-- Prefer a `GenServer` when writes must be serialised with side effects;
-  ETS alone gives no such ordering.
-- Name the table, set the right access mode, and decide the heir policy
-  *when you create it* — these are the three decisions that are painful
-  to reverse later.
+- Prefer ETS over a GenServer-held map when reads dominate.
+- Prefer a GenServer when writes must be ordered with side effects;
+  single-object atomicity is all ETS gives.
+- Decide name, access mode and heir policy at creation; they are awkward
+  to change later.
+
+## Sources
+
+- Erlang/OTP `ets` reference. <https://www.erlang.org/doc/apps/stdlib/ets.html>

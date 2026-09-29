@@ -7,67 +7,81 @@ stage: stable
 
 # Event Sourcing: CQRS
 
-*Command Query Responsibility Segregation: split the service into one that changes state and one that answers reads. That is the whole pattern.*
+*Command Query Responsibility Segregation: give changing the system and asking the system separate models. The idea is small; the consequences are what need care.*
 
 ---
 
-## The definition
+## What it is
 
-Given a service with mixed methods:
+CQRS takes the command/query distinction
+([COMMANDS_AND_QUERIES](COMMANDS_AND_QUERIES.md)) and applies it to the
+structure of a component. Instead of one model that both enforces
+business rules and serves every screen, there are two:
 
+- a **write model** that accepts commands, enforces invariants and
+  records the outcome;
+- one or more **read models** shaped for the questions people ask,
+  denormalised and free of business rules.
+
+The smallest version is two modules where there used to be one:
+
+```elixir
+defmodule Box.Office do          # write side: commands only
+  def reserve_seat(show_id, seat_id, customer_id), do: …
+  def release_seat(show_id, seat_id), do: …
+end
+
+defmodule Box.Office.Views do    # read side: queries only
+  def seats_available(show_id), do: …
+  def reservations_for(customer_id), do: …
+end
 ```
-FooService.do_foo(id, x)        # mutates
-FooService.do_some_other_foo()  # mutates
-FooService.read_foo(id)         # returns
-FooService.read_bar(id)         # returns
-```
 
-CQRS splits it on the operation type:
+Everything beyond that (separate stores, separate deployments, events
+flowing between the sides) is an implementation choice layered on top.
 
-```
-FooWriteService.do_foo(id, x)        # commands
-FooWriteService.do_some_other_foo()
-FooReadService.read_foo(id)          # queries
-FooReadService.read_bar(id)
-```
+## Common misreadings
 
-That is all it is: two services where there was one, divided by whether a
-method mutates state or returns data.
+- **"CQRS means microservices."** No. Two modules in one OTP application
+  already qualify. Splitting into separately deployed services is a
+  scaling or ownership decision.
+- **"CQRS requires event sourcing."** No. A write model over ordinary
+  tables can feed read models too. Event sourcing makes it convenient,
+  because the events are exactly what the read side needs to subscribe to
+  ([PROJECTIONS](PROJECTIONS.md)).
+- **"CQRS is complicated."** The pattern is not. The complexity people
+  report usually comes from what they adopted alongside it: messaging,
+  eventual consistency, multiple databases.
 
----
+## What it buys
 
-## The invariant
+- Each side is optimised for its own job: the write side for correctness
+  and contention, the read side for query speed and shape.
+- The read side can scale out independently and can have as many models
+  as there are distinct questions.
+- Rules live in one place (the write model); screens do not accumulate
+  business logic.
 
-- **Commands** mutate state and do not return domain data.
-- **Queries** return data and do not mutate state.
+## What it costs
 
-The guarantee this buys: a call that returns a value can be assumed not to
-have changed anything, and a call that changes things will not be used as
-a read. In a system where commands are also *events being appended*, this
-invariant is what keeps the write path and the read path from entangling.
+- With separate stores, read models lag behind writes. The UI and API
+  must be designed for eventual consistency (for example, return the new
+  stream version from a command and let a client wait until a read model
+  has reached it).
+- More code paths to test, deploy and monitor.
 
----
+## When to reach for it
 
-## What CQRS is not
+- Reads and writes have clearly different shapes or loads.
+- Several very different views of the same data are needed.
+- The domain has real rules worth guarding in a focused write model.
 
-- **Not distributed by definition.** Two modules in one service is CQRS;
-  the split to separate services is a deployment choice, not the pattern.
-- **Not dependent on event sourcing.** You can segregate responsibilities
-  over a plain CRUD database. Event Sourcing happens to make the read side
-  (projections) fall out naturally, but the two are independent choices.
-- **Not inherently complex.** The confusion in the wild comes from people
-  bundling every hard problem into the word. The pattern itself is a
-  one-line split.
+For simple CRUD screens over simple data, a single model is fine.
 
----
+## Sources
 
-## Choosing
-
-- Start with one service, split by *operation type* (interfaces), not by
-  process, if that is all you need.
-- Split to separate deployments when the read side needs different
-  scaling, different data (denormalized read models), or different
-  availability than the write side.
-- Do not adopt CQRS to look correct; adopt it when the write path and the
-  read path want to optimise differently. See
-  [COMMANDS_AND_QUERIES](COMMANDS_AND_QUERIES.md).
+- Greg Young, *CQRS Documents*, self-published PDF, 2010 (free). https://cqrs.wordpress.com/wp-content/uploads/2010/11/cqrs_documents.pdf
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Martin Fowler, "CQRS", martinfowler.com, 2011 (free). https://martinfowler.com/bliki/CQRS.html
+- Microsoft patterns & practices, *Exploring CQRS and Event Sourcing* (the CQRS Journey), 2012 (free online). https://learn.microsoft.com/en-us/previous-versions/msp-n-p/jj554200(v=pandp.10)
+- Microsoft, "CQRS pattern", Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs

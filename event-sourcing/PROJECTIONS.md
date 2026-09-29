@@ -7,131 +7,102 @@ stage: stable
 
 # Event Sourcing: Projections
 
-*Deriving read models from events. The event store is the source of truth; read models are disposable artifacts.*
+*A projection turns events into a read model shaped for one set of questions. The events are the truth; every read model is a rebuildable by-product.*
 
 ---
 
-## The pattern
+## What a projection is
 
-A **projection** consumes events from the event store and upserts a read
-model optimized for queries. It is the "write" side of the query service
-in CQRS.
+A projection subscribes to events and maintains a read model: a table,
+an ETS table, a search index, a file. Queries are answered from that
+read model, never by folding the event store on the request path
+([COMMANDS_AND_QUERIES](COMMANDS_AND_QUERIES.md)).
 
 ```
-Event store
-    │  subscription (per projection)
-    ▼
-Projection
-    │  INSERT / UPDATE
-    ▼
-Read model (table, report, file)
-    │  SELECT
-    ▼
-Query handler
+event store ──subscription──▶ projection ──writes──▶ read model ◀──reads── query
 ```
 
-**Principles**
+Three properties to protect:
 
-- Never query external systems in a projection: every value the read
-  model needs must be in the events, or derived from them.
-- A read model is disposable. Delete it, replay from the beginning, and
-  it is rebuilt identically.
-- A projection tracks its position with a **checkpoint** so it resumes
-  where it stopped, not from the start.
+- **Self-contained.** Everything the read model needs comes from the
+  events it consumes (or from other read models it owns). A projection
+  that calls a remote service during replay gets different answers each
+  time and cannot be rebuilt faithfully.
+- **Rebuildable.** Drop the read model, reset the checkpoint, replay, and
+  you get the same result.
+- **Resumable.** It stores a checkpoint, so a restart continues from the
+  last handled event ([CHECKPOINTS](CHECKPOINTS.md)).
 
----
+## Shapes of read model
 
-## The three basic kinds
+| Shape | Write pattern | Good for |
+|-------|---------------|----------|
+| **Append-only** | One new row per event, never updated | Activity feeds, audit views, counting |
+| **Current state** | One row per entity, updated in place (upsert) | "Show me reservation 4410 now" |
+| **Versioned rows** | A new row per change, each with valid-from / recorded-at | History and point-in-time queries |
+| **Summary** | Aggregates across many streams (counts, totals, top-N) | Dashboards, reports |
+| **File or export** | Writes a document, CSV or index instead of rows | Hand-offs to other systems, static sites |
 
-### 1. Simple projection — one row per event
+Notes on the choices:
 
-Append a row for every event; never update. Suited to event counts,
-audit trails, per-event reports.
+- Prefer **upsert** to separate insert/update paths for current-state
+  models. It tolerates a missing "first" event, redelivery, and replays
+  that start mid-history.
+- **Versioned rows** cost space but make every write an insert, which
+  bulk-loads very fast, and they answer two different time questions:
+  *as it was known then* (recorded time) and *as it applied then*
+  (effective time). Financial systems often need both. Add a retention
+  policy so the table does not grow without bound.
 
-| event_id | stream | type | at |
-|----------|--------|------|----|
-| 412 | order-77 | order_placed | 12:01 |
-| 413 | order-77 | order_paid | 12:05 |
+## Replay versus live
 
-### 2. Updating projection — one row per entity
+A projection has two phases with opposite priorities.
 
-The read model reflects the *current* state of an entity: each event
-updates the existing row. Suited to entity views: "order 77 as of now".
+- **Catching up** (rebuild, new projection, long outage): throughput is
+  everything and freshness does not matter. Batch aggressively: buffer
+  thousands of events and write them with a bulk insert or a `COPY`, one
+  transaction and one checkpoint per batch.
+- **Live** (at the head of the log): freshness matters. Write per event,
+  or in small time-bounded batches.
 
-### 3. Inserting-update projection — upsert
+If both phases share one code path parameterised by batch size, the
+projection can switch automatically: large batches while far behind,
+single events once caught up.
 
-Update the row if the entity exists, insert it if it does not. The safe
-default for entity read models when event order is not guaranteed to
-start with a "created" event.
+## On the BEAM
 
-**The inserting variant — insert every state.** Instead of updating one
-row, insert a new row per change; everything becomes an insert. Space
-unfriendly, but:
-
-- Updates become bulk-insertable — a dramatic speedup on replay.
-- The read model keeps every historical state, enabling **as-of / as-at
-  queries**: the balance *as of* a moment, or *as at* a moment excluding
-  what does not apply yet (a cheque deposited today but settling
-  tomorrow). Common in financial systems, and the main reason to pick
-  this variant. Pair with scavenging of old rows to bound growth.
-
----
-
-## Beyond one row
-
-| Kind | What it does | Used for |
-|------|--------------|----------|
-| **Batched projection** | Collects events and applies them in one batch write (per N events or per time window) | High-volume event streams where per-event writes are too slow |
-| **Report projection** | Aggregates across many streams into a summary (counts, totals, groups) | Dashboards, "top N" lists, analytics |
-| **File projection** | Writes the read model to a file instead of a database | Exports, artifacts consumed by other systems |
-
----
-
-## Checkpoints
-
-A projection restarts from its **checkpoint**: the last position it
-consumed. The choice of checkpoint storage is a trade:
-
-| Storage | Survives restart | Cost | Use when |
-|---------|-------------------|------|----------|
-| Memory | No — replays from the start | Free | Development, or projections cheap to replay |
-| File | Yes, per node | Low | Simple services, one instance |
-| Database | Yes, shared | Medium | Several instances must not double-consume |
-
-Store the checkpoint *with* the write it guards, transactionally when
-possible: a projection that wrote rows but lost its checkpoint replays
-and double-writes (make writes idempotent to be safe), and one that
-saved its checkpoint but lost the write silently skips events.
-The full catalogue is in [CHECKPOINTS](CHECKPOINTS.md).
-
-## Batched replay, live tail
-
-A projection often has two phases with different optimisations:
-
-- **Replay (history)**: goal is catching up fast. Batch heavily — write a
-  CSV and bulk-insert it; an 80-million-row replay is orders of magnitude
-  faster that way. Latency to the read model is irrelevant.
-- **Live (caught up)**: goal is freshness. Switch to per-event writes.
-
-If both phases share code, switching is a batch-size change: fall behind,
-batch up; caught up, individual writes.
-
----
+A projection is typically one supervised process per read model,
+subscribed to the store. For in-memory read models an ETS table owned by
+that process (or by a heir) gives concurrent reads without going
+through the process; for durable ones, SQLite or PostgreSQL via Ecto,
+with the checkpoint in the same database and written in the same
+transaction. See [ETS](../beam/ETS.md).
 
 ## Naming
 
-- Projection modules are named for the read model they build:
-  `OrderSummaryProjection`, not `OrderProjectionWorker`.
-- Projection functions are named for the event they apply:
-  `apply_order_placed/2`, `apply_order_paid/2`.
-- The write side names the past tense of what happened; never reuse
-  command names on the read side.
+- Name the module after the read model it maintains, and the handler
+  clauses after the events they apply.
+- The read side uses the same past-tense event names as the write side;
+  command names never appear in projections.
 
-## Anti-patterns
+## Pitfalls
 
-- **Editing read models by hand.** They derive from events only; a manual
-  fix disappears on the next replay.
-- **Querying the event store for live queries.** The event store is
-  append-only history; queries answer from read models.
-- **Sharing a read model between projections.** One projection owns one
-  read model; a second consumer needs its own.
+- **Hand-editing a read model.** The next rebuild erases the fix. Fix the
+  projection or append a correcting event.
+- **Serving queries from the event store.** It is optimised for
+  appending and streaming, not for ad hoc reads.
+- **Two projections writing one table.** Each read model has exactly one
+  owner; a second consumer builds its own.
+- **Non-idempotent handlers.** Delivery is usually at least once; a
+  handler that increments a counter without checking the event position
+  will drift.
+
+Testing projections: see
+[TESTING_EVENT_SOURCING](../testing/TESTING_EVENT_SOURCING.md).
+
+## Sources
+
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Microsoft, "Materialized View pattern", Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/materialized-view
+- Martin Fowler, "Bitemporal History", martinfowler.com, 2021 (free; the two time axes behind versioned read models). https://martinfowler.com/articles/bitemporal-history.html
+- Microsoft, "CQRS pattern" (read models built from events), Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs

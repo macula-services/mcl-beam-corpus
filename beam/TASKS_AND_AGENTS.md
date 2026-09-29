@@ -7,70 +7,73 @@ stage: stable
 
 # BEAM: Tasks and Agents
 
-*Task: run something async, get the result. Agent: hold simple state. Both are GenServers with ergonomic fronts — reach for them before a raw GenServer.*
+*Two small Elixir abstractions over processes: a Task runs one job, an Agent holds one value. Use them when a full GenServer would be ceremony.*
 
 ---
 
-## Task — async computation
-
-A Task runs a function in a process and delivers the result to the
-caller:
+## Task: one job in its own process
 
 ```elixir
-task = Task.async(fn -> do_heavy_work() end)
-# ... other work ...
-result = Task.await(task, 15_000)
+reports = Task.async(fn -> Reports.render(month) end)
+totals  = Ledger.totals(month)          # runs meanwhile
+Task.await(reports)                     # default timeout 5000 ms
 ```
 
-| Function | Does |
-|----------|------|
-| `Task.async/1` + `Task.await/2` | Run concurrently, collect the result |
-| `Task.start/1` | Fire and forget |
-| `Task.async_stream/3` | Concurrent, backpressured, ordered results over a collection |
-| `Task.Supervisor.async/2` | As `async`, but children are supervised |
+| Function | Linked to caller | Result |
+|----------|------------------|--------|
+| `Task.async/1` + `Task.await/2` | yes (also monitored) | returned to the caller, who must await it |
+| `Task.start/1` | no | none: fire and forget |
+| `Task.start_link/1` | yes | none; usually a supervised child |
+| `Task.async_stream/3` | yes | a stream of results, `max_concurrency` defaulting to the number of online schedulers, ordered by default |
+| `Task.Supervisor.async_nolink/3` | no (monitored) | `Task.yield/2` gives `{:ok, result}` or `{:exit, reason}`; the caller survives a crashing task |
 
-The contract: the task is a **one-shot computation**, not a long-lived
-state holder. It exits when the function returns; nothing survives it
-by design.
+A task lives exactly as long as its function. Its result is a message to
+the caller, and the reply is always sent, so an `async` that is never
+awaited leaves a stray message in the caller's mailbox.
 
 ---
 
-## Agent — simple state
-
-An Agent wraps a value the way a GenServer wraps a state machine, for
-the case where all you need is "get and update this thing":
+## Agent: one value behind a process
 
 ```elixir
-{:ok, pid} = Agent.start_link(fn -> 0 end)
-Agent.update(pid, &(&1 + 1))
-Agent.get(pid, & &1)
+{:ok, seen} = Agent.start_link(fn -> MapSet.new() end)
+Agent.update(seen, &MapSet.put(&1, "node-3"))
+Agent.get(seen, &MapSet.size/1)
 ```
 
-The update function runs **inside the agent's process**, so updates
-are serialised — but the function should stay fast and pure for the
-same reasons a GenServer callback must.
+The functions you pass run **inside the agent process**, so updates are
+serialised and atomic. That cuts both ways: expensive work inside the
+agent blocks every other client, while pulling the state out to compute
+on it gives up atomicity. Choose per operation.
 
 ---
 
-## The hierarchy of choosing
+## Picking the tool
 
 | Need | Tool |
 |------|------|
-| One async computation | `Task` |
-| A value that must be read/updated safely | `Agent` |
-| State with a lifecycle, many message kinds, timeouts | `GenServer` |
-| Dynamic children on demand | `DynamicSupervisor` + `Task.Supervisor` |
+| Run something concurrently and use its result | `Task.async` / `await` |
+| Process a collection concurrently with bounded parallelism | `Task.async_stream` |
+| Background job whose failure must not kill the caller | `Task.Supervisor` |
+| A shared value with get/update semantics | `Agent` |
+| State with rules, several message kinds, timers, monitors | [GENSERVER](GENSERVER.md) |
+| Long-lived workers started on demand | `DynamicSupervisor` ([SUPERVISION_TREES](SUPERVISION_TREES.md)) |
 
-## Rules of thumb
+## Pitfalls
 
-- **Task for the work, not the state.** If the task result must live
-  on, store it somewhere supervised — the task dies with its result.
-- **Agent for data, GenServer for behaviour.** When the updates need
-  rules beyond "apply this function", you have a behaviour, and a
-  GenServer's callbacks are where the rules go.
-- **`async_stream` is the production shape.** For processing
-  collections concurrently, it gives you backpressure and supervision
-  that a raw spawn loop does not.
-- **Never `Task.async` without an await path.** An unawaited `async`
-  task is a process leak; `start` (fire and forget) is the honest
-  spelling of "I will not collect this result".
+- **Linked tasks crash the caller.** `Task.async` is linked; use
+  `Task.Supervisor.async_nolink` when the job may fail and the caller
+  must continue.
+- **A task result is not stored anywhere.** If it must outlive the
+  caller, hand it to a process or table that is supervised.
+- **An Agent that grows rules is a GenServer in disguise.** Move to
+  explicit callbacks once updates need validation or side effects.
+- For CPU-heavy fan-out, remember the scheduler count bounds real
+  parallelism ([SCHEDULER](SCHEDULER.md)).
+
+## Sources
+
+- *Designing Elixir Systems with OTP*, 1st edition, James Edward Gray II and Bruce A. Tate, Pragmatic Bookshelf, 2019. <https://pragprog.com/titles/jgotp/designing-elixir-systems-with-otp/>
+- Elixir `Task` documentation. <https://elixir.hexdocs.pm/Task.html>
+- Elixir `Task.Supervisor` documentation. <https://elixir.hexdocs.pm/Task.Supervisor.html>
+- Elixir `Agent` documentation. <https://elixir.hexdocs.pm/Agent.html>

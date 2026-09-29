@@ -7,88 +7,85 @@ stage: stable
 
 # Erlang: Modules and Records
 
-*Modules group functions; records name tuple fields at compile time. The two constructs everything else in Erlang builds on.*
+*Modules are the unit of code, loading and visibility; records are compile-time field names over tuples. Most Erlang and OTP code is written with both.*
 
 ---
 
 ## Modules
 
-A module is a file of function clauses, declared with attributes:
+A module is one source file (`meter.erl` defines `meter`) made of
+attributes followed by functions. Only exported functions can be called
+from outside, and a function is identified by name **and** arity:
+`read/1` and `read/2` are unrelated functions.
 
 ```erlang
--module(simple_cache).
--export([insert/2, lookup/1, delete/1]).
+-module(meter).
+-export([new/1, record/2, total/1]).
 
-insert(Key, Value) -> ... .
-
-lookup(Key) -> ... .
-
-delete(Key) -> ... .
+new(Id) -> {meter, Id, 0}.
+record({meter, Id, T}, Kwh) when Kwh >= 0 -> {meter, Id, T + Kwh}.
+total({meter, _Id, T}) -> T.
 ```
 
-Only exported functions are callable from outside. A function is named
-by `name/arity` — `insert/2` and `insert/3` are *different functions*
-that happen to share a name.
+| Attribute | Purpose |
+|-----------|---------|
+| `-export([F/A, ...]).` | the public API |
+| `-import(Mod, [F/A, ...]).` | call another module's functions without the prefix (hurts readability; use rarely) |
+| `-behaviour(gen_server).` | declare which callbacks the module implements; the compiler warns about missing ones |
+| `-compile(Options).` | per-module compiler options, e.g. a parse transform |
+| `-on_load(F/0).` | function run automatically when the module is loaded |
+| `-include("file.hrl").` / `-include_lib(...)` | textual inclusion of headers (records, macros) |
 
-The attributes that matter:
-
-| Attribute | Role |
-|-----------|------|
-| `-export/1` | The public API |
-| `-import/1` | Bring functions in unqualified (use sparingly) |
-| `-behaviour/1` | Declare a callback contract (checked by the compiler) |
-| `-compile/1` | Compiler flags (`export_all`, warnings) |
+Modules are also the unit of code loading: the runtime can hold a
+current and an old version of each one, which is the basis of
+[hot code upgrades](../beam/HOT_CODE_UPGRADES.md).
 
 ---
 
-## Records — named tuple fields
+## Records
 
-Erlang's structured data type is the **tuple**, fast and compact — but
-add a field and every pattern in the codebase breaks. Records solve
-that: compile-time names over fixed-shape tuples.
-
-```erlang
--record(customer, {name = "<anonymous>", address, phone}).
-```
-
-This declares a **tagged tuple** of four elements (three fields plus the
-tag `customer`), with field order fixed by the declaration. Creating
-and matching:
+Tuples are the compact, fast way to group values, but positional access
+breaks every pattern when a field is added. A record gives the positions
+names at compile time:
 
 ```erlang
-C = #customer{name = "Sandy Claws", phone = "55554321"},  %% fields in any order
-#customer{name = Name, phone = Phone} = C,                %% match
-C#customer.name                                           %% access
-C#customer{name = "New Name"}                             %% "update" (new tuple)
+-record(reading, {sensor, value = 0.0, unit = celsius, taken_at}).
+
+R  = #reading{sensor = <<"t-12">>, taken_at = erlang:system_time(second)},
+#reading{value = V} = R,          % match one field
+Unit = R#reading.unit,            % access
+R2 = R#reading{value = 21.5}.     % copy with a changed field
 ```
 
-Fields left unset get their declared default, or the atom `undefined`.
+At runtime `R` is just `{reading, <<"t-12">>, 0.0, celsius, 1759000000}`:
+the record name, then the fields in declaration order. Fields not given
+a value take their default, or `undefined` if none was declared.
+`record_info(fields, reading)` lists the field names at compile time.
 
-### Where declarations live
+### Sharing records
 
-Records are **compile-time**, not runtime types: the declaration must
-be visible to the compiler of every module that uses it. Convention:
-declare shared records in `.hrl` header files and include them:
-
-```erlang
--include("customer.hrl").
-```
+The compiler must see a record's definition in every module that uses
+it, so shared records live in `.hrl` header files included where
+needed. OTP itself ships records this way, for example `#file_info{}` in
+Kernel's `file.hrl`.
 
 ---
 
-## The trade
+## Trade-offs
 
-Records exist because tuples are the fastest, smallest structured data
-on the BEAM — records give tuples names without costing anything at
-runtime. The cost is compile-time coupling: every module sharing a
-record depends on the header, and the header must change together with
-every consumer. That is the accepted price of the performance; when
-flexibility matters more, maps are the alternative.
+- **Records cost nothing at runtime** and give pattern matching on named
+  fields, but they couple every module that includes the header: change
+  the record and all of them must be recompiled together. Data stored or
+  sent between nodes in the old shape does not update itself.
+- **Maps** are self-describing and flexible, at slightly higher cost;
+  they suit open-ended data and data that crosses version boundaries.
+- Elixir's answer is the **struct**, a map that carries its type
+  ([STRUCTS](../elixir/STRUCTS.md)); Elixir's `Record` module exists for
+  working with Erlang records.
 
-## Why it matters
+## Sources
 
-All OTP data the runtime hands you — `#child_spec{}`, application
-resource files, observer records — is records. Reading Erlang and OTP
-means reading records; knowing they are compile-time names over tuples
-is the whole explanation of their speed, their header-file coupling,
-and why Elixir replaced them with structs on its side.
+- *Erlang and OTP in Action*, 1st edition, Martin Logan, Eric Merritt and Richard Carlsson, Manning, 2010. <https://www.manning.com/books/erlang-and-otp-in-action>
+- Erlang/OTP Reference Manual, Modules. <https://www.erlang.org/doc/system/modules.html>
+- Erlang/OTP Reference Manual, Records. <https://www.erlang.org/doc/system/ref_man_records.html>
+- Erlang/OTP Reference Manual, Preprocessor (include, macros). <https://www.erlang.org/doc/system/macros.html>

@@ -7,118 +7,125 @@ stage: stable
 
 # Testing: Property-Based Testing
 
-*State the invariant, let generators produce the cases, and shrink failures to the smallest counterexample. PropEr (Erlang) and StreamData (Elixir) are the BEAM's tools.*
+*Describe a rule that must hold for all inputs, let a generator produce hundreds of inputs, and when one breaks the rule, let the framework shrink it to a minimal counterexample. PropEr (Erlang, usable from Elixir via PropCheck) and StreamData (Elixir) are the BEAM's main tools.*
 
 ---
 
-## Stateless vs stateful
+## The idea
 
-Properties come in two flavours:
+An example-based test checks one input you thought of. A property states
+something that must be true for *every* input of a certain kind, and the
+framework searches for an input that makes it false. The approach comes
+from Haskell's QuickCheck (Claessen and Hughes, 2000); Quviq QuickCheck
+brought it to Erlang, and PropEr is the open-source Erlang tool in the
+same family.
 
-| | Stateless | Stateful |
-|---|---|---|
-| Shape | Generate inputs, check an invariant holds | Generate command *sequences*, check the system against a model |
-| Fit | Pure, isolated components without side effects | Stateful integration: servers, registries, aggregates |
-| BEAM example | A serializer's round-trip | A GenServer's behaviour under command sequences |
+## A stateless property
 
-Stateless properties are the equivalent of unit tests; stateful
-properties replace the integration tests that example-based testing
-does poorly.
-
----
-
-## The stateless shape
-
-A property module has three sections: **properties**, **helpers**, and
-**generators**.
+The same round-trip property in the two main tools:
 
 ```elixir
-property "encode/decode round-trips" do
-  forall term <- term_generator() do
-    term == decode(encode(term))
+# StreamData (use ExUnitProperties)
+property "a seat code survives encode/decode" do
+  check all row <- member_of(?A..?Z), number <- integer(1..60) do
+    seat = %Seat{row: row, number: number}
+    assert seat |> Seat.encode() |> Seat.decode() == {:ok, seat}
+  end
+end
+
+# PropCheck, the Elixir wrapper for PropEr (use PropCheck)
+property "a seat code survives encode/decode" do
+  forall {row, number} <- {range(?A, ?Z), range(1, 60)} do
+    seat = %Seat{row: row, number: number}
+    Seat.decode(Seat.encode(seat)) == {:ok, seat}
   end
 end
 ```
 
-The framework expands the generators, runs the property against every
-generated case, and reports. The property *is* the specification — the
-invariant that must hold for all inputs the generators can produce.
+A property file usually has three parts: the properties, any helper
+functions, and the generators that describe the input space. Getting the
+generators right (realistic distribution, edge cases included) is often
+most of the work. In PropEr, `proper_gen:pick/1` produces one value from
+a generator and `proper_gen:sample/1` prints a spread, which helps when
+debugging them.
 
----
+## Useful kinds of property
 
-## Shrinking — the diagnosis is the counterexample
+| Kind | Shape | Example |
+|------|-------|---------|
+| Round trip | `decode(encode(x)) == x` | Serialisers, event upcasters |
+| Invariant | Some fact holds after any operation | A seat map never has more taken seats than seats |
+| Model / oracle | Real implementation agrees with a simple one | An optimised price calculation vs a naive, obviously correct one |
+| Idempotence | `f(f(x)) == f(x)` | Normalising input, applying the same event twice to an idempotent projection |
+| Metamorphic | A known change to input produces a known change to output | Adding a free seat increases the free count by one |
 
-A failing case is shrunk: the framework reduces the generated input
-until it finds one that still fails but is as small as possible. The
-book's cash-register example: a property fails with a register holding
-a billion coins and a price in the hundreds of thousands — shrinking
-finds the same failure with **$5 in the register and a cheap item**.
+For the model kind, the model must be *obviously* right and must not
+share code with the implementation, or you are only checking the bug
+against itself. When replacing legacy code, the old implementation makes
+an excellent model ([LEGACY_CODE](LEGACY_CODE.md)).
 
-The minimal counterexample *is* the bug report: "the cash function
-cannot make change when the customer's payment exceeds the register's
-contents" — one line to debug instead of a data dump. When you design
-a property, ask yourself what its minimal failing case would teach.
+## Shrinking
 
----
+When a property fails on a large random input, the framework repeatedly
+tries simpler versions of that input (shorter lists, smaller numbers)
+and keeps the simplest one that still fails. The report you get is not
+"it broke on this 400-element list" but "it breaks on `[0, 0]`", which
+usually points straight at the cause. When writing a generator, keep it
+shrinkable (build from the library's combinators rather than drawing raw
+random numbers) so this keeps working.
 
-## Modeling — test against the obviously-correct
+## Stateful properties
 
-The strongest stateless trick: implement the same logic twice — the
-real code and a **model** so simple it is obviously correct — and
-assert they agree:
+For systems with state (a GenServer, an aggregate, a cache) you describe
+a **model** of the system as a state machine:
 
-```elixir
-property "biggest matches the model" do
-  forall list <- list_generator() do
-    Pbt.biggest(list) == model_biggest(list)
-  end
-end
-```
+- an initial model state;
+- commands that can be issued, each with a precondition saying when it
+  is allowed;
+- how each command changes the model state;
+- a postcondition comparing the real system's response with what the
+  model predicts.
 
-The model is the oracle. The rule: the model must be *obviously
-right* — if it shares the implementation's logic, you are comparing the
-bug to itself. An even stronger form exists when a golden reference
-implementation is available: compare against it directly.
+The framework generates random valid *sequences* of commands, runs them
+against the real system, checks every postcondition, and on failure
+shrinks the sequence to the shortest one that still fails. In PropEr
+this is `proper_statem` (callbacks `initial_state/0`, `command/1`,
+`precondition/2`, `next_state/3`, `postcondition/3`), with `proper_fsm`
+for finite-state-machine models; PropCheck exposes the same from Elixir.
+StreamData does not provide stateful testing; use PropEr/PropCheck for
+it.
 
----
-
-## Stateful properties — state machine models
-
-For stateful systems, model the component as a **state machine**: an
-abstract model state, a set of commands with preconditions, and
-postcondition checks. The framework generates valid command sequences
-(shrinking sequences, not just data), drives the real system with
-them, and checks the real state against the model state after each
-command.
-
-This is how property-based testing earns its keep on process-heavy
-BEAM code — and the natural fit for event-sourced aggregates: the
-model is the fold of events, the commands are the aggregate's
-interface, and every sequence is a given/when/then test generated for
-free. See [TESTING_EVENT_SOURCING](TESTING_EVENT_SOURCING.md).
-
----
+This fits event-sourced aggregates well: the model is a simple fold of
+the events the aggregate should emit, the commands are the aggregate's
+commands, and every generated sequence is a given/when/then scenario
+nobody had to write by hand
+([TESTING_EVENT_SOURCING](TESTING_EVENT_SOURCING.md)).
 
 ## Tools
 
 | Tool | Language | Notes |
 |------|----------|-------|
-| **PropEr** | Erlang | The original; stateful machinery most developed; usable from Elixir |
-| **StreamData** | Elixir | Idiomatic generators, integrates with ExUnit |
-
-Debugging generators is part of the workflow: `proper_gen:pick/1`
-materialises an instance, `sample/1` shows a spread.
+| **PropEr** | Erlang | Stateless and stateful testing, integrates with Erlang type specs |
+| **PropCheck** | Elixir | Wrapper around PropEr, including its stateful testing |
+| **StreamData** | Elixir | Generators plus `ExUnitProperties` (`property`/`check all`), integrated with ExUnit; no stateful testing |
 
 ## When not to
 
-- **Nondeterministic or side-effecting code.** Properties must be
-  pure; mock the boundary first.
-- **Where an example is the spec.** A regression for one observed bug
-  is best kept as its exact example; write the property when a general
-  invariant emerges.
+- Code whose output depends on time, randomness or the outside world,
+  until those are pushed behind a seam you control.
+- A regression test for one specific reported bug: keep the exact
+  example. Write a property once a general rule becomes clear.
 
 ## Rule of thumb
 
-Stateless properties for codecs and pure folds; stateful models for
-servers and aggregates. If the invariant is hard to state, the design
-is hiding something — the property is a design tool, not just a test.
+Stateless properties for codecs, pure functions and folds; stateful
+models for processes and aggregates. If you cannot state the property,
+you may not yet understand what the code is supposed to guarantee.
+
+## Sources
+
+- Fred Hebert, *Property-Based Testing with PropEr, Erlang, and Elixir: Find Bugs Before Your Users Do*, The Pragmatic Programmers, 2019. https://pragprog.com/titles/fhproper/property-based-testing-with-proper-erlang-and-elixir/ ; the author's free earlier draft: https://propertesting.com/
+- PropEr documentation and API reference (`proper_statem`, `proper_gen`), free. https://proper-testing.github.io/ and https://proper-testing.github.io/apidocs/proper_statem.html
+- StreamData documentation, `ExUnitProperties`, hexdocs (free). https://hexdocs.pm/stream_data/ExUnitProperties.html ; README (stateful testing not supported): https://github.com/whatyouhide/stream_data
+- PropCheck documentation, hexdocs (free). https://hexdocs.pm/propcheck/readme.html
+- Koen Claessen and John Hughes, "QuickCheck: A Lightweight Tool for Random Testing of Haskell Programs", ICFP 2000 (free PDF copy in a Tufts course archive). https://www.cs.tufts.edu/~nr/cs257/archive/john-hughes/quick.pdf

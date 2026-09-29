@@ -7,77 +7,80 @@ stage: stable
 
 # BEAM: The GoF Patterns on the BEAM
 
-*The classic 23 still apply — but the BEAM replaces some with built-ins, rebrands others, and turns a few into anti-patterns. A mapping.*
+*The classic object-oriented pattern catalogue, read from a functional, process-based runtime: some patterns survive as module design, many become language or runtime features, a few turn into anti-patterns.*
 
 ---
 
-## Still patterns — implement as modules
+## Why a mapping is needed
 
-| GoF | On the BEAM |
-|-----|-------------|
-| Adapter | A plain module translating one interface to another |
-| Facade | A plain module hiding machinery (the GenServer API shape) |
-| Decorator | Function composition and pipelines; `|>` chains |
-| Strategy | Higher-order functions, or a behaviour with several implementations |
-
-Nothing changes for these — they are about module boundaries, and the
-BEAM has modules.
+The 1994 catalogue solves problems of class-based languages: how to vary
+behaviour without subclass explosions, how to share objects safely, how
+to decouple senders from receivers. The BEAM has no classes or mutable
+objects, but it has modules, higher-order functions, behaviours,
+protocols and processes. Many of the catalogue's problems are therefore
+already solved, and writing the pattern out by hand adds code a reader
+must decode.
 
 ---
 
-## Replaced by the language and runtime
+## Patterns that survive as module design
 
-| GoF | The BEAM answer |
-|-----|-----------------|
-| Singleton | **Anti-pattern as mutable global.** Application env for config; a registered process ([REGISTRY](REGISTRY.md)) or a named GenServer for one stateful instance |
-| Observer | Process monitoring, subscriptions, `Registry` with `keys: :duplicate`, `Phoenix.PubSub` — pub/sub is native |
-| Iterator | `Enum` and `Stream` — iteration is data, not objects |
-| State | `gen_statem` / a GenServer's state transitions |
-| Template method | Behaviours: the callback list *is* the template |
-| Chain of responsibility | Function pipelines; `Plug` |
-| Memento | `:erlang.term_to_binary/1` — and in event-sourced systems the event log *is* the memento; no separate snapshot needed |
-| Prototype | Rarely needed — immutability makes copying trivial |
-| Flyweight | ETS tables, atom interning, refcounted binaries — sharing is the runtime's business |
-| Proxy | The process boundary: a GenServer's API module is a natural proxy |
-| Visitor | **Protocols** — dispatch on the visited type, per type implementations ([PROTOCOLS](../elixir/PROTOCOLS.md)) |
-| Interpreter | Macros and DSLs when truly needed — [MACROS](../elixir/MACROS.md) |
-| Mediator | Event channels, a broker — see [EVENT_DRIVEN_ARCHITECTURE](../architecture/EVENT_DRIVEN_ARCHITECTURE.md) |
+| Pattern | BEAM form |
+|---------|-----------|
+| Adapter | a module translating one API into another |
+| Facade | one public module in front of a library's internals; also the client API of a [GenServer](GENSERVER.md) |
+| Strategy | pass a function, or pick a module implementing a behaviour |
+| Decorator | wrap a function in another; compose with `|>` |
 
----
+## Patterns absorbed by the language or runtime
 
-## The name collision that bites
+| Pattern | What replaces it |
+|---------|------------------|
+| Template Method | a behaviour: the callback list is the template, `use` can inject defaults |
+| Visitor | a [protocol](../elixir/PROTOCOLS.md): per-type implementations, dispatch on the data |
+| Iterator | `Enum` and lazy `Stream` over any `Enumerable` |
+| Observer | monitors, `Registry` with duplicate keys, `:pg`, Phoenix.PubSub |
+| State | `gen_statem`, or a GenServer whose state carries the current mode |
+| Chain of Responsibility | a list of functions or plugs applied in order |
+| Proxy | the process boundary: the API module forwards to a process that may be local or remote |
+| Flyweight | runtime sharing: atoms, reference-counted large binaries, [ETS](ETS.md) |
+| Prototype | immutability: "copying" is just reusing the value |
+| Memento | immutable values are snapshots already; in event-sourced systems the event log is the history, with snapshots as an optimisation |
+| Mediator | a broker process or event channel; see [EVENT_DRIVEN_ARCHITECTURE](../architecture/EVENT_DRIVEN_ARCHITECTURE.md) |
+| Interpreter | pattern matching over a data structure; [macros](../elixir/MACROS.md) only when compile-time syntax is truly needed |
 
-**Command** means two things:
+## Creational patterns shrink to functions
 
-| Context | Meaning |
-|---------|---------|
-| GoF | Encapsulate a request as an object (undo, queues) |
-| CQRS / event sourcing | A message that *changes state*, returning nothing but status |
+Factory Method becomes a constructor function (`new/1`). Builder becomes
+a struct with defaults plus keyword options or a changeset. Abstract
+Factory becomes a behaviour whose implementation is chosen by
+configuration.
 
-They are different patterns sharing a word. On the BEAM, the GoF
-command is usually just a message (`GenServer.cast`); the CQRS command
-is the domain concept — see
+## Singleton is an anti-pattern
+
+A mutable global does not exist on the BEAM, and imitating one creates a
+bottleneck. Configuration goes in the application environment; a single
+stateful thing is a named process under supervision, with the
+consequences that implies (serialised access, restarts).
+
+## One word, two patterns: Command
+
+In the catalogue, a command is a request packaged as an object so it can
+be queued or undone. In CQRS and event sourcing, a command is an
+intention to change a domain aggregate, validated and answered with
+events or a rejection. On the BEAM the first is usually just a message;
+the second is a domain concept, see
 [COMMANDS_AND_QUERIES](../event-sourcing/COMMANDS_AND_QUERIES.md).
 
----
+## Rule of thumb
 
-## Factory patterns, deflated
+Before implementing a named pattern, ask what processes, behaviours,
+protocols, monitors and ETS already give you. A built-in is known to
+every reader; a hand-rolled pattern is not.
 
-Abstract Factory, Factory Method, Builder carry ceremony the BEAM
-does not need:
+## Sources
 
-- Factory Method → a plain constructor function.
-- Builder → a struct with defaults, keyword options, or a changeset.
-- Abstract Factory → a behaviour chosen by config.
-
-Write the function; skip the machinery.
-
-## Rules of thumb
-
-- When you reach for a GoF pattern, first ask what the **runtime
-  already does**: processes, monitors, ETS, and protocols cover most
-  of the catalogue.
-- A pattern implemented where a built-in exists is code the next
-  reader must learn — the built-in is already known.
-- The surviving patterns are the module-boundary ones (Adapter,
-  Facade, Strategy). The rest are features.
+- *Design Patterns: Elements of Reusable Object-Oriented Software*, Erich Gamma, Richard Helm, Ralph Johnson and John Vlissides, Addison-Wesley, 1994. <https://www.informit.com/store/design-patterns-elements-of-reusable-object-oriented-9780201633610>
+- Elixir guide, Protocols. <https://elixir.hexdocs.pm/protocols.html>
+- Elixir documentation, Typespecs and behaviours. <https://elixir.hexdocs.pm/typespecs.html>
+- Erlang/OTP `gen_statem` reference. <https://www.erlang.org/doc/apps/stdlib/gen_statem.html>

@@ -7,68 +7,71 @@ stage: stable
 
 # BEAM: Concurrency Models
 
-*The actor model is one of seven ways to handle concurrency. Know the landscape to know when the BEAM's answer is — and is not — the right one.*
+*The BEAM's isolated processes with message passing are one answer to concurrency among several. Knowing the alternatives tells you when the BEAM fits and when to hand work to something else.*
 
 ---
 
-## The seven models
+## Two questions that separate the models
 
-| Model | Core idea | Language/framework |
-|-------|-----------|--------------------|
-| **Threads and locks** | Formalise what the hardware does | Java, C++, everywhere |
-| **Functional programming** | Immutability removes the shared-state problem | Clojure, Haskell |
-| **CSP** | Message passing *through channels*, first-class | Go, Clojure core.async |
-| **Actors** | Message passing *between processes*, each with state | Erlang/Elixir, Akka |
-| **STM + agents** | Transactions over shared state, atomic updates | Clojure refs/agents |
-| **Data parallelism** | One operation, many data elements — the GPU | OpenCL, CUDA |
-| **Lambda architecture** | Batch + stream layers over the same data | Big Data stacks |
+Every concurrency model answers two questions:
 
----
+1. **Is state shared?** Either many threads touch the same memory and
+   must coordinate, or each unit owns its data and others ask for it.
+2. **What is the unit of composition?** A thread, a transaction, a
+   channel, a process, or a whole data array.
 
-## The actor model's sweet spot
-
-The BEAM's model is distinguished by three properties the others do
-not combine:
-
-1. **Fault tolerance.** Actors provide sophisticated error detection and
-   recovery: processes are isolated, monitored, and restarted by
-   supervision. Threads give you none of this.
-2. **Distribution for free.** The actor model targets shared- *and*
-   distributed-memory architectures; the same code runs on one node
-   or twelve.
-3. **Shared state, contained.** Each actor owns its state; nothing
-   outside can touch it. Functional programming avoids shared state
-   entirely; actors *contain* it.
+| Family | State | Coordination | Where you meet it |
+|--------|-------|--------------|-------------------|
+| Threads with locks | shared, mutable | mutexes, condition variables, atomics | C, C++, Java, Rust |
+| Immutable data + pure functions | shared but never mutated | none needed for reads; parallel maps and reducers | Haskell, Clojure, Elixir's own data |
+| Software transactional memory | shared, mutated only in transactions | optimistic retry | Clojure refs, Haskell STM |
+| Channels (CSP) | owned by goroutines/tasks | synchronous or buffered channels | Go, Clojure core.async, Kotlin |
+| Actors / processes | owned by each process | asynchronous messages to a mailbox | Erlang, Elixir, Akka, Orleans |
+| Data parallelism | large arrays | one kernel over all elements | GPUs via CUDA, OpenCL, Nx/EXLA |
+| Batch + stream pipelines | immutable logs and derived views | framework-managed | MapReduce, Spark, Kafka Streams |
 
 ---
 
-## When each model wins
+## Where the BEAM sits
 
-| Situation | Model |
-|-----------|-------|
-| Long-lived, resilient services; many independent stateful things | Actors (the BEAM) |
-| Pipelines and stream processing, backpressure | CSP channels |
-| Massive numeric workloads on one box | Data parallelism (GPU) |
-| Highly concurrent reads over mostly-shared data | STM (or ETS-style structures) |
-| Terabytes of batch data | Lambda architecture |
-| Low-level, performance-critical control | Threads and locks — with care |
+The BEAM combines the process row with the immutable-data row: values
+are immutable, and each process owns its heap, so the only way to
+affect another process is a message. Three consequences follow:
 
-## The comparison that matters
+- **Failure is local and observable.** A crash destroys one process's
+  state and nothing else; links and monitors let another process react.
+  That is the foundation of [SUPERVISION_TREES](SUPERVISION_TREES.md).
+- **The same primitives span machines.** Send, link and monitor work
+  across nodes ([DISTRIBUTION](DISTRIBUTION.md)), which shared-memory
+  models cannot offer.
+- **Fairness is built in.** Preemptive scheduling by reductions keeps
+  latency stable under load ([SCHEDULER](SCHEDULER.md)).
 
-**CSP vs actors** is the classic confusion — both are message passing.
-The difference: CSP puts the **channel** first (communication is the
-abstraction; processes are incidental), actors put the **process** first
-(channels do not exist; processes are the abstraction). CSP programs
-read as data flows; actor programs read as conversations between
-independent beings. The BEAM's supervision tree has no CSP
-equivalent — and CSP's composable pipelines have no direct BEAM
-equivalent either.
+## Actors versus channels
 
-## Rules of thumb
+Both pass messages, and they are often confused. In CSP the **channel**
+is the named thing: anonymous workers read and write channels, and a
+program reads as a data-flow graph. In the actor model the **process**
+is the named thing: messages go to an address (a pid or registered
+name), each process has one mailbox, and a program reads as a set of
+cooperating services. Channels make pipelines and back-pressure easy
+to express; addressed processes make supervision and distribution easy.
+On the BEAM, back-pressure comes from synchronous calls, demand-driven
+libraries such as GenStage, or bounded `Task.async_stream`.
 
-- Reach for another model only when the BEAM's is genuinely wrong
-  for the work — the BEAM covers most server-side concurrency.
-- GPU-bound number crunching belongs in NIFs/ports, not in actors.
-- If you find yourself building channels and pipelines *inside* Elixir,
-  you are writing CSP in an actor language; either accept the
-  impedance mismatch deliberately or use the right tool.
+## When to reach for something else
+
+- **Dense numeric work** (matrix math, training) wants data parallelism:
+  call out to a GPU through a NIF or a library such as Nx, rather than
+  spreading numbers across processes.
+- **Tight shared-memory algorithms** with nanosecond budgets belong in
+  native code; the BEAM's copying between processes costs more than a
+  lock there.
+- **Read-mostly shared lookups** inside a node are served by
+  [ETS](ETS.md), a controlled exception to "nothing is shared".
+
+## Sources
+
+- *Seven Concurrency Models in Seven Weeks: When Threads Unravel*, 1st edition, Paul Butcher, Pragmatic Bookshelf, 2014. <https://pragprog.com/titles/pb7con/seven-concurrency-models-in-seven-weeks/>
+- Erlang/OTP Reference Manual, Processes. <https://www.erlang.org/doc/system/ref_man_processes.html>
+- Elixir `Task` documentation (`async_stream/3`). <https://elixir.hexdocs.pm/Task.html>

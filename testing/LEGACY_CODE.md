@@ -7,85 +7,88 @@ stage: stable
 
 # Testing: Legacy Code
 
-*Code without tests is not testable by accident. The seam is the tool: find where behaviour changes, break the dependency there, and test outward from the change you must make.*
+*Changing code that has no tests: pin down what it does today, open a seam where you need to change it, and make the change under that safety net. Test around the change, not the whole system.*
 
 ---
 
-## The definition that matters
+## What "legacy" means here
 
-Legacy code is not "old code" — it is **code without tests**, and
-therefore code you cannot change safely. The testing problem and the
-change problem are the same problem: you cannot modify what you
-cannot verify.
+Michael Feathers's working definition is the useful one: legacy code is
+code without tests. Age is irrelevant. Without tests you cannot tell
+whether a change broke something, so every change is a gamble, and the
+testing problem and the change problem are one problem.
 
----
+## Seams
 
-## Seams — the lever
+A **seam** (Feathers's term) is a place where you can change what the
+code does without editing the code at that place. In Elixir and Erlang
+the common seams are:
 
-A **seam** is a place where behaviour can be changed without editing
-the code: a function boundary, a module boundary, an injected
-dependency, a message handler. Legacy code's problem is that its
-seams were never exposed — everything was welded together.
+| Seam | Example |
+|------|---------|
+| A function argument | Pass the clock, the HTTP client or the repo in, instead of calling it directly |
+| Application config | `Application.get_env(:box, :payments, Box.Payments.Live)` chooses an implementation |
+| A behaviour | Code calls `impl().charge/2`; tests supply a module implementing the same behaviour (Mox builds these) |
+| A process boundary | Code sends messages to a registered name or a pid it was given; a test starts a stand-in process under that name |
+| A module boundary | Extract the awkward call into your own module, which becomes the thing you substitute |
 
-The workflow:
+Untested code tends to have its seams welded shut: direct calls to
+external systems, hard-coded names, logic buried inside a large
+`handle_call/3`. The work is to open just enough of them.
 
-1. **Pick the change** you must make — never refactor for its own
-   sake.
-2. **Find the seam** around the change: the smallest boundary that
-   encloses what you will alter.
-3. **Break the dependency** — introduce the seam (a function
-   parameter, a behaviour, a mockable boundary).
-4. **Test the seam** — pin the current behaviour with tests *before*
-   changing it. These are characterization tests: they assert what
-   the code *does*, not what it *should*.
-5. **Change, then verify.** The characterization tests are the safety
-   net that proves the change did not alter anything else.
+## The loop
 
----
+1. **Start from the change you actually need**, not a wish to clean up.
+2. **Find the smallest area** around that change that you can test.
+3. **Break the dependencies** that stop you calling it from a test,
+   using the least invasive seam available (often: extract a function,
+   add a parameter).
+4. **Write characterisation tests** for the current behaviour of that
+   area.
+5. **Make the change**, adding tests for the new behaviour. The
+   characterisation tests tell you what else you affected.
+6. Optionally refactor, still under the tests.
 
-## Characterization tests
+## Characterisation tests
 
-The honest test for untested code: run it, observe the output, and
-assert *that*. The tests document the code's actual behaviour — bugs
-and all — so that the next change's side effects become visible.
+A characterisation test records what the code *does*, not what it
+*should* do. Call it, observe the result, and assert exactly that,
+surprises included:
 
-Two rules:
+```elixir
+test "discount rounds half-cents down (current behaviour, see issue #212)" do
+  assert Box.Pricing.discounted(1_005, 0.5) == 502
+end
+```
 
-- **Pin behaviour before refactoring.** Refactoring without
-  characterization tests is archaeology without a rope.
-- **Name the weirdness.** A characterization test that asserts a
-  surprising output is documentation: "yes, this returns the string
-  backwards — and this test proves it is still doing so."
+- Write them before refactoring. Otherwise you cannot tell a behaviour
+  change from a refactor.
+- When the observed behaviour looks like a bug, still pin it, name it in
+  the test, and decide separately whether to fix it. Somebody may
+  depend on it.
+- Snapshot-style ("golden master") tests over a wide range of inputs are
+  a quick way to characterise a pure function you do not yet understand.
+  Property-based testing against the old implementation as a model is a
+  stronger version ([PROPERTY_BASED_TESTING](PROPERTY_BASED_TESTING.md)).
 
----
+## On the BEAM
 
-## The dependency-breaking toolbox
-
-| Technique | What it does |
-|-----------|--------------|
-| Extract function | Pull a chunk into a named, testable function |
-| Introduce parameter | The hard-coded dependency becomes an argument |
-| Introduce behaviour / protocol | A module boundary the test can substitute |
-| Wrap the dependency | The untestable call sits behind a function you own |
-| Spawn-and-message (BEAM) | A process boundary — the natural seam on this stack |
-
-The BEAM's processes are the built-in answer: a GenServer API *is* a
-seam, and `start_supervised!` with a substitute module makes legacy
-process code testable without touching its internals.
+Processes help. A GenServer's public API is already a boundary: if the
+legacy module is a process, a test can start it with `start_supervised!`
+and drive it through its API, or start a substitute under the same name
+so that its callers can be tested. Logic tangled inside callbacks can be
+moved into plain functions that the callbacks call, which are then
+testable without any process at all.
 
 ## Rules of thumb
 
-- **Test around the change, not the module.** The goal is a safe
-  change, not a fully tested legacy system.
-- **The seam is the investment.** Each seam you introduce is the
-  interest that pays for every future change nearby.
-- **Characterize first, refactor second, feature third.** In that
-  order, or the refactor is a rewrite without a parachute.
+- Aim for a safe change, not a fully tested legacy system.
+- Each seam you open lowers the cost of every later change nearby.
+- Characterise first, then refactor, then add the feature.
 
-## Why it matters
+## Sources
 
-The mesh inherits code like anyone else: a legacy module in an
-`mcl-*` service, a helper nobody dares touch. The legacy-code
-discipline is what turns "we cannot change that" into "here is the
-seam, here are the tests pinning it, here is the change" — the same
-loop, applied to the code that scared everyone.
+- Michael C. Feathers, *Working Effectively with Legacy Code*, Prentice Hall (Pearson), 2004. https://www.informit.com/store/working-effectively-with-legacy-code-9780131177055
+- Nick Chamberlain, *Intuitive Testing with Legacy Code*, self-published via buildplease.com (sample dated 2016; ASP.NET MVC examples). https://buildplease.com/products/itmvc/
+- Martin Fowler, "Legacy Seam", martinfowler.com, 2024 (free). https://martinfowler.com/bliki/LegacySeam.html
+- "Characterization test", Wikipedia (free overview; term attributed to Feathers). https://en.wikipedia.org/wiki/Characterization_test

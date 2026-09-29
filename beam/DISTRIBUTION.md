@@ -7,83 +7,75 @@ stage: stable
 
 # BEAM: Distribution
 
-*Send a message to a process on another machine with the same syntax as a local one. The network is an implementation detail the language hides.*
+*Connected BEAM nodes address each other's processes with the same send, link and monitor primitives used locally. Convenient, and built for a trusted network.*
 
 ---
 
-## Location transparency
+## What it is
 
-`Pid ! message` looks the same whether the receiver is on this node or
-another continent. All the routing information lives in the process
-identifier; Erlang guarantees pids are unique across the network. Code
-written for one machine runs on a dozen unchanged — and a program
-designed for a dozen machines can be tested on a laptop.
-
-This one property changes how systems get designed: communication
-between machines stops being a threshold to cross and becomes the
-normal state of things.
+A node started with a name (`-name` or `-sname`) can connect to other
+named nodes. Once connected, a pid on the remote node behaves like a
+local one: `send/2`, links and monitors all work, and the pid itself
+carries which node it lives on. Code written against pids does not care
+where the process runs, which is what lets a cluster be tested on a
+laptop.
 
 ---
 
-## Nodes
+## How it works
 
-A **node** is a running VM configured for distribution, named
-`nodename@hostname`:
+| Piece | Role |
+|-------|------|
+| Node name | `name@host`. `-name` uses fully qualified host names, `-sname` short ones. The two modes cannot talk to each other. |
+| EPMD | A small daemon on each host (default TCP port 4369) that maps node names to the port each node listens on. |
+| Cookie | A shared secret; nodes whose cookies do not match refuse the connection. |
+| `net_kernel` | Manages connections. Connecting to one node also connects you to the nodes it knows (transitive connections), unless started with `-connect_all false`. |
+| Hidden nodes | Started with `-hidden`; their connections are not transitive and they do not show up in `nodes()`. Useful for tooling and remote shells. |
 
-| Flag | Name form | Use |
-|------|-----------|-----|
-| `-name` | `simple_cache@mybox.home.net` | Normal networks with working DNS |
-| `-sname` | `simple_cache@mybox` | Short names, same subnet, no DNS |
-
-Long and short names **cannot be mixed** in one cluster — they are
-different communication modes.
-
----
-
-## How nodes find each other
-
-- **EPMD** (Erlang Port Mapper Daemon, port 4369) maps node names to
-  ports on each host. A node wanting to reach another asks the remote
-  host's EPMD.
-- Nodes do not discover each other automatically: one node must look
-  for another. Once two connect, they **exchange everything they know**
-  about other nodes, so the cluster becomes fully connected.
-- The cluster is a **fully connected mesh**; the practical ceiling is a
-  couple of dozen nodes — connection overhead grows quadratically.
-  **Hidden nodes** connect for inspection without joining the mesh
-  proper.
+Every node keeps a TCP connection to every other node it knows, so a
+default cluster is a full mesh and connection count grows quadratically.
+That, plus heartbeat traffic, is why default distribution suits tens of
+nodes, not thousands.
 
 ---
 
-## The magic cookie
+## Semantics you must design for
 
-A node refuses traffic from any node that does not know its cookie — a
-shared secret, generated into `~/.erlang.cookie` on first start. This is
-**authorization, not security**: the default distribution model assumes
-a trusted network. For anything crossing an untrusted boundary, use
-TLS distribution, IPsec, or your own protocol — not the plain
-distribution port.
+- **Ordering holds per pair, delivery does not.** Signals from one
+  process to another arrive in the order sent, but if the connection
+  drops, messages in flight can be lost. Links fire with reason
+  `:noconnection` even though the remote process may still be alive.
+- **A missing reply is ambiguous.** Crash, overload and network
+  partition look identical from the caller; use timeouts and monitors,
+  and make remote operations safe to retry.
+- **Distribution connects, it does not replicate.** Data lives on one
+  node unless you replicate it (Mnesia, an event store, your own
+  protocol).
 
----
+## Security
 
-## The operational realities
-
-| Reality | Consequence |
-|---------|-------------|
-| Sending is fire-and-forget | A robust sender handles no-reply the same way whether the receiver died or the network partitioned — "not responding" is one failure mode |
-| Network adds nondeterminism | Message ordering and delivery guarantees weaken across nodes; design for it |
-| Cookie mismatch is the #1 connection failure | After firewalls. Check the cookie before anything else |
-| Distribution ≠ data replication | Mnesia (or your own design) is what replicates; distribution only connects |
-
----
+The cookie handshake guards against accidental cross-talk, not
+attackers: the OTP documentation describes it as not cryptographically
+secure, and a connected node can run arbitrary code on its peers. Use
+TLS distribution (`-proto_dist inet_tls`) and keep the distribution
+ports off untrusted networks.
 
 ## Rules of thumb
 
-- Reach for distribution when one machine cannot hold the work —
-  not before.
-- Keep clusters small and homogeneous (one name mode, one cookie,
-  one trust domain).
-- Prefer process groups (`pg`) or registries over ad-hoc node-name
-  addressing; node names churn in fleets.
-- In fleet deployments, pinned TLS distribution with short names beats
-  long-name DNS assumptions that break in containers.
+- Use distribution when one node is not enough, and keep a cluster to
+  one trust domain, one naming mode and one cookie.
+- Address services by group or registry, not by hard-coded node names:
+  `:pg` for cluster-wide groups, [REGISTRY](REGISTRY.md) locally.
+- In container fleets, prefer explicit node names and TLS over
+  assumptions about DNS and EPMD reachability.
+
+Related: [SCHEDULER](SCHEDULER.md), [ETS](ETS.md), [CONCURRENCY_MODELS](CONCURRENCY_MODELS.md).
+
+## Sources
+
+- *Erlang and OTP in Action*, 1st edition, Martin Logan, Eric Merritt and Richard Carlsson, Manning, 2010. <https://www.manning.com/books/erlang-and-otp-in-action>
+- Erlang/OTP Reference Manual, Distributed Erlang. <https://www.erlang.org/doc/system/distributed.html>
+- Erlang/OTP Reference Manual, Processes (signal ordering, links, monitors). <https://www.erlang.org/doc/system/ref_man_processes.html>
+- ERTS `epmd` reference. <https://www.erlang.org/doc/apps/erts/epmd_cmd.html>
+- SSL application, Using TLS for Erlang Distribution. <https://www.erlang.org/doc/apps/ssl/ssl_distribution.html>
+- Kernel `pg` reference. <https://www.erlang.org/doc/apps/kernel/pg.html>

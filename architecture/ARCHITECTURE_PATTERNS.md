@@ -7,67 +7,86 @@ stage: stable
 
 # Architecture: Pattern Survey
 
-*Layered, microkernel, microservices, space-based. What each is, what it costs, and which one your system is asking for.*
+*Layered, microkernel, microservices, space-based: what each shape is, what it trades away, and what kind of system it suits.*
 
 ---
 
-## The four patterns (event-driven is its own note)
+## The shapes at a glance
 
-| Pattern | Shape | Sweet spot |
-|---------|-------|------------|
-| **Layered** | Presentation → business → persistence → database | Small, simple applications; rapid development |
-| **Microkernel** | Core system + plug-in modules | Product-based apps: scheduled tasks, plugin ecosystems |
-| **Microservices** | Independently deployed services, one bounded purpose | Highly decoupled domains, per-service scaling |
-| **Space-based** | In-memory data grid, no central database | High-volume, variable-load, database-bottlenecked systems |
+| Style | Structure | Suits |
+|-------|-----------|-------|
+| **Layered** | Horizontal tiers (presentation, business, persistence), each calling only the one below | Small or simple applications, teams new to a domain |
+| **Microkernel** | A minimal core plus independently built plug-ins | Products whose value is extensibility: IDEs, rule engines, tools with add-ons |
+| **Microservices** | Independently deployable services, each owning one capability and its data | Many teams, parts that must scale or change at different rates |
+| **Space-based** | Processing units holding data in replicated memory; the database is written asynchronously, off the request path | Very high or spiky load where the database is the proven bottleneck |
 
-See [EVENT_DRIVEN_ARCHITECTURE](EVENT_DRIVEN_ARCHITECTURE.md) for the fifth pattern of the survey.
+Event-driven architecture is covered separately in
+[EVENT_DRIVEN_ARCHITECTURE](EVENT_DRIVEN_ARCHITECTURE.md). It combines
+with any of these shapes.
 
----
+## Questions to ask of any style
 
-## The analysis axes
+| Quality | Question |
+|---------|----------|
+| Changeability | How much must change, and where, for one new feature? |
+| Deployability | What has to be released together? |
+| Testability | What can be tested in isolation? |
+| Scalability | Which part saturates first, and can it scale alone? |
+| Performance | How many hops and serialisations does a request cross? |
+| Reversibility | How expensive is it to discover this was the wrong choice? |
 
-Every pattern is a trade on the same axes:
+## Each style, briefly
 
-| Axis | Question |
-|------|----------|
-| Agility | How cheap is a change? |
-| Deployability | What must ship together? |
-| Testability | What can be tested alone? |
-| Scalability | Where does load hit first? |
-| Performance | Where does latency live? |
-| Cost of getting it wrong | How painful is the wrong choice? |
+**Layered.** Easy to start and to understand. Its weakness is that a
+feature cuts through every layer, so changes spread horizontally, and
+layers tend to share one database. Watch for layers that only forward
+calls without adding anything (often called the architecture sinkhole);
+a few are harmless, many mean the layering is ceremony.
 
-**Layered** wins on simplicity and loses on agility: every layer knows
-its neighbour, and the database couples everything. The **sinkhole
-anti-pattern** — requests passing through layers that do nothing —
-is the sign a layer exists for show.
+**Microkernel.** The core stays small and stable; features arrive as
+plug-ins behind a contract. The contract is the product: changing it
+breaks every plug-in, so it needs versioning discipline from the start.
 
-**Microkernel** shines when the product *is* extensibility: the core
-stays stable, plugins evolve. The cost: the core's contract is the
-whole product, and getting it wrong is expensive.
+**Microservices.** Independent deployment and scaling per capability, at
+the price of network calls, distributed data, harder end-to-end testing,
+and serious operational tooling. The most expensive mistake is a bad
+service boundary, which turns every feature into a coordinated
+multi-service release.
 
-**Microservices** buy independent evolution and per-service scaling,
-and bill you in deployment, network, and testing complexity. A
-monolith is not the failure mode; a badly cut microservice boundary
-is.
+**Space-based.** Removes the central database from the hot path by
+keeping working data in replicated in-memory grids and persisting
+asynchronously. Scales elastically, but the consistency model, data
+collisions between replicas, and testing at realistic load are all
+hard.
 
-**Space-based** removes the database as bottleneck with in-memory
-grids and replication — at the cost of a fundamentally different data
-model and real complexity.
+## On the BEAM
 
----
+Several of these ideas are built into OTP. An OTP application with its
+supervision tree is already a modular unit; a release can be a
+"monolith of applications" that is split into separately deployed nodes
+later. ETS and replicated stores offer space-based-style in-memory data
+without extra infrastructure, and distributed Erlang gives location
+transparency between nodes. See
+[APPLICATIONS](../beam/APPLICATIONS.md) and
+[DISTRIBUTION](../beam/DISTRIBUTION.md).
 
 ## Choosing
 
-1. **Start layered** — it is the cheapest thing that works for small
-   systems, and its failure mode (sinkholes, coupled layers) is visible
-   early.
-2. **Cut to microservices by bounded context**, not by layer — see
-   [DOMAIN_MODELING](../event-sourcing/DOMAIN_MODELING.md). A service
-   per context scales; a service per layer doubles your latency.
-3. **Reach for microkernel** when extensions by third parties are the
-   product.
-4. **Reach for space-based** only when measurements show the database
-   is the bottleneck under your load — never on anticipation.
-5. Event-driven topology is orthogonal to all four: any of them can be
-   event-driven on the inside or between services.
+1. **Start simple.** A modular monolith (layered or, better, sliced by
+   capability) is cheap and its problems show early.
+2. **Cut services along bounded contexts**, not along technical layers
+   ([DOMAIN_MODELING](../event-sourcing/DOMAIN_MODELING.md)). A service
+   per layer adds network hops to every request without adding
+   independence.
+3. **Choose microkernel** when third-party or optional extensions are
+   central to the product.
+4. **Choose space-based** only when measurement shows the database is
+   the limit under real load.
+5. **Treat event-driven integration as orthogonal**: any of the above can
+   use events inside or between components.
+
+## Sources
+
+- Mark Richards, *Software Architecture Patterns*, 1st edition, O'Reilly Media, 2015 (https://www.oreilly.com/library/view/software-architecture-patterns/9781491971437/); 2nd edition, O'Reilly Media, 2022 (https://www.oreilly.com/library/view/software-architecture-patterns/9781098134280/). Author's page: https://developertoarchitect.com/publishedbooks.html
+- James Lewis and Martin Fowler, "Microservices", martinfowler.com, 2014 (free). https://martinfowler.com/articles/microservices.html
+- Microsoft, "Architecture styles", Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/guide/architecture-styles/

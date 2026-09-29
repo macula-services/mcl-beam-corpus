@@ -7,91 +7,91 @@ stage: stable
 
 # Event Sourcing: Checkpoints
 
-*A checkpoint is a pointer into the log: where this consumer got to. Durable where the consumer's progress must survive a restart.*
+*A checkpoint is a consumer's bookmark in the log: the position of the last event it fully handled. Where you keep it decides what a restart costs and what can go wrong.*
 
 ---
 
-## Why they exist
+## What a checkpoint is for
 
-Consumers follow the log and act on events. When the power goes out:
+Anything that follows the log (a projection, a process manager, an
+integration adapter) needs to know where to resume after a restart. A
+checkpoint records the position of the last event the consumer finished
+with: a global log position, a stream version, or a byte offset.
 
-1. Replaying terabytes of history is not an option — the system must come
-   back fast.
-2. Actions that must happen once must not happen again on restart.
+Without one, a restarted consumer must either replay everything (slow,
+and dangerous if handling causes side effects) or start at the head
+(silently missing events).
 
-A checkpoint solves both: remember the position of the last successfully
-processed event, resume from there. The simplest form is a byte offset into
-the log.
+## Where to keep it
 
----
+| Storage | Survives a restart | Cost | Good fit |
+|---------|--------------------|------|----------|
+| Process memory | No, replays from the start | None | Tests; read models that are cheap to rebuild and rebuilt on every boot by design |
+| Local file | Yes, on that node | Low | Single-instance consumers |
+| Same database as the read model | Yes | Low to medium | Most projections; see below |
+| Its own stream in the event store | Yes | One append per checkpoint | Central visibility of all consumers; modest volumes |
+| Shared among several consumers | Depends on backing store | Coordination | Active/standby pairs, or partitioning one consumer's work |
+| Agreed by a quorum | Yes | High, and stalls without a majority | Rare; geographically replicated read models that must prove freshness |
 
-## Choosing a checkpoint
+## Keep the checkpoint with the write it guards
 
-Prefer the simplest mechanism that meets the durability need.
+The strongest option for a projection is to store its checkpoint in the
+same database as its read model and update both in **one transaction**.
+Then the two can never disagree:
 
-| Kind | Survives restart | Cost | Use when |
-|------|-------------------|------|----------|
-| **Memory** | No — replays from start | Free | Tests; projections cheap to rebuild; anything rebuilt on restart by design |
-| **File** | Yes, if implemented durably | Low | Simple services, one instance |
-| **Database** | Yes, shared | Medium | Multiple instances must not double-consume |
-| **Checkpoint stream** | Yes, in the event store | Store writes | Central visibility + audit; low-to-medium volume |
-| **Shared** | Depends on backing | Coordination | Multiple consumers agreeing on one position |
-| **Consensus** | Yes | Very high | Majority-verified position; see below |
+- if the transaction commits, both the rows and the position moved;
+- if it fails, neither did, and the event is handled again.
 
----
+Split across two stores, a crash between the writes leaves either rows
+without a moved checkpoint (the event is applied twice on restart) or a
+moved checkpoint without rows (the event is silently skipped). The
+second failure is the dangerous one. Even with transactions, make
+handlers idempotent: delivery is usually at least once.
 
-## Database checkpoint — the atomic write
+```elixir
+Repo.transaction(fn ->
+  apply_to_read_model(event)
+  Repo.update_all(from(c in Checkpoint, where: c.name == "seat_map"),
+                  set: [position: event.position])
+end)
+```
 
-The reason to keep a checkpoint in the database is that **the checkpoint
-and the projection data can be written in one transaction**. That removes
-the entire class of edge cases around retries: a projection that wrote rows
-but lost its checkpoint replays and double-writes (make writes idempotent
-anyway); one that saved its checkpoint but lost the write silently skips
-events. Atomicity makes both impossible.
+Storing a position per row also lets a query report "this answer
+reflects the log up to position N".
 
-Keeping the checkpoint *with* the projection row also enables fine-grained
-optimistic concurrency and lets a query return "data as of position N".
+## Checkpoints as a stream
 
----
+Appending each new position to a dedicated stream makes every
+consumer's progress, and its whole history of progress, visible from the
+store itself. The cost is extra writes: each consumer adds its own
+appends, so with many consumers checkpoint traffic can rival or exceed
+the domain traffic. Batch checkpoint writes (every N events or every
+few hundred milliseconds) and switch strategy if the volume becomes
+material.
 
-## Checkpoint stream — central visibility, write amplification
+## Sharing and quorum
 
-Store the checkpoint as the last event in its own stream: a tail read gives
-the position, and the stream *is* the audit of every position the consumer
-ever held. You can see where a projection was at 14:01:27, not just where it
-is now.
+Several instances can share one checkpoint so that only one is active,
+or so they split the events between them. Splitting gives up ordering
+across the split: one instance may process "order shipped" before
+another has processed "order paid". That is acceptable only for read
+models that do not depend on order.
 
-Costs:
+Requiring a majority of replicas to agree on a position is occasionally
+justified, and usually far more machinery than the problem needs.
 
-- **Write amplification.** Every consumer writes back per batch processed;
-  with many read models the store sees 3-5x the domain writes. Pathological
-  at high volume.
-- **WORM media** accumulates useless checkpoint history forever.
+## Monitoring for free
 
-Default to a checkpoint stream on low-to-medium volume systems; it is
-simple to move away from later when amplification becomes material.
+Each consumer's checkpoint compared with the head of the log is its lag.
+A single query over the checkpoint table (or a view over checkpoint
+streams) shows the health of every projection and process manager at
+once, before you build any bespoke monitoring.
 
----
+See also [PROJECTIONS](PROJECTIONS.md) and, for testing restarts,
+[TESTING_EVENT_SOURCING](../testing/TESTING_EVENT_SOURCING.md).
 
-## Shared and consensus checkpoints
+## Sources
 
-- **Shared**: multiple consumers on one checkpoint. Typical use: several
-  instances agreeing which is active, or splitting events (odd/even) to
-  scale out a consumer. Absolute ordering is lost — a read model may have
-  "shipped" before "paid". Worth it when not all projections need order.
-- **Consensus**: a majority of subscribers must agree on the position.
-  Buy: with geographically distributed read models, a quorum read is
-  guaranteed to include a replica that is up to the checkpoint. Cost: if
-  a majority is down, no consensus, no progress. **Usually a sledgehammer
-  for a fly** — verify you need it before you pay for it.
-
----
-
-## The monitoring angle
-
-Checkpoints are the system's own observability: each consumer's position
-vs the log's head is, on average, a wall-clock estimate of how far behind
-that consumer is. A single `SELECT * FROM checkpoints` — or a dashboard
-reading checkpoint streams — shows the health of every consumer and its
-SLA in one place. This is a free benefit of the log-structured design;
-use it before building bespoke monitoring.
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Microsoft, "Event Sourcing pattern" (idempotency requirements), Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing
+- Microsoft, "Idempotent Consumer pattern", Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/idempotent-consumer

@@ -7,58 +7,77 @@ stage: stable
 
 # Event Sourcing: Stream Fork and Join
 
-*Fork splits one stream into many; join merges many into one. They are inverse operations — and the join is where the hard questions live.*
+*Forking derives many streams from one by some key; joining merges many streams into one. Forking is cheap and safe. Joining forces you to decide what order means.*
 
 ---
 
-## Stream fork (split)
+## Fork: one stream in, many out
 
-Take one stream and produce many, by a criterion:
+A fork reads one stream and writes each event into a derived stream
+chosen by a key in the event. The canonical data stays where it is; the
+derived streams are indexes for other access patterns.
 
+```elixir
+# every ticket sale also appears in a per-venue stream
+def handle(%TicketSold{venue_id: venue} = e, meta) do
+  link_to("sales-by-venue-" <> venue, meta.stream, meta.version)
+end
 ```
-from_stream("sales").fork("bylocation-" + event.location)
-```
 
-Every sale event is reindexed into a `bylocation-{location}` stream. This
-"reindexing" is a fundamental stream operation: keep one canonical stream
-(per sales) and derive grouping streams (per location, per region) for
-reporting needs.
+Typical uses: per-region or per-customer views for reporting, or
+partitioning work so that separate consumers each follow one derived
+stream.
 
-### Link events, not copies
+### Link, don't copy (usually)
 
-A fork should emit a **link event** — a pointer to the original — rather
-than a copy:
+The derived stream can hold either copies of the events or **links**:
+small records pointing at the original stream and version.
 
-- Links are smaller than the events they reference.
-- The underlying stream can be deleted or scavenged; links remain and
-  simply stop resolving — you can *see* that the underlying data is gone.
-- Reads of the derived stream behave like reads of a normal stream.
+- Links are small, so forks are cheap to add.
+- There is one copy of the data. If the original is deleted or expires,
+  the link visibly fails to resolve instead of leaving an orphaned copy
+  behind, which matters for retention and erasure.
+- Readers see the derived stream as an ordinary stream; resolution
+  happens on read.
 
-Implement both link and copy: copies exist for when the store is sharded
-and resolution would cross shards.
+Copies are the right choice when resolving a link would be expensive or
+impossible, for example when the original lives on another shard or
+another store. KurrentDB's system projections (`$by_category`,
+`$by_event_type`) are well-known examples of forks built with link
+events.
 
----
+## Join: many streams in, one out
 
-## Stream join
+A join reads several streams and produces a single combined stream, for
+example all events for an order *and* its shipments, in one sequence.
 
-The inverse: take multiple streams, produce one. Common in systems — and
-the source of subtler problems:
+The hard part is order:
 
-- **Fork knows its input is ordered.** Join does not: its sources can live
-  in multiple locations.
-- With one source, ordering assurances are easy. With several, they are
-  not always obvious — and may hold 99.9% of the time.
-- If the system is **partitioned across sources, a precise join may be
-  impossible**. Two events from different streams have no single total
-  order to respect.
-
----
+- A fork's input is one ordered stream, so its outputs inherit a
+  well-defined order.
+- A join's inputs each have their own order, but there may be no single
+  true order *between* them. If they live on different nodes or
+  partitions, two events from different inputs may have no meaningful
+  "which came first".
+- Timestamps do not solve this: clocks on different nodes drift.
+- The resulting order may look right almost always and still be wrong
+  under load or during a partition, which is the worst kind of bug.
 
 ## Rules of thumb
 
-- Fork freely: it is cheap, reversible, and the standard move for
-  reindexing/reporting.
-- Before joining, ask which ordering the consumer actually needs. Many
-  read models do not need a total order — they need "eventually correct".
-- If the join must be precise, keep its sources co-located or sequence the
-  join itself through a single log rather than reading two.
+- Fork freely. It is additive, cheap, and can always be rebuilt from the
+  source stream.
+- Before building a join, ask what the consumer actually needs. Many
+  read models are fine with "each input in order, inputs interleaved
+  arbitrarily".
+- If you truly need one total order, get it at write time: write the
+  events through one log (one partition or a global position in a single
+  store) rather than trying to reconstruct it afterwards.
+
+See [EVENT_LOGS](EVENT_LOGS.md) for streams and positions and
+[PROJECTIONS](PROJECTIONS.md) for consumers of derived streams.
+
+## Sources
+
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Kurrent, "System projections" (link events, `$by_category`), KurrentDB documentation (free). https://docs.kurrent.io/server/v25.0/features/projections/system.html

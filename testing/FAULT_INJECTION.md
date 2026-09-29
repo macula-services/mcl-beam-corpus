@@ -7,91 +7,113 @@ stage: stable
 
 # Testing: Fault Injection
 
-*Kill processes in the running application and assert the system recovers. The tests that earn the BEAM's fault-tolerance claims.*
+*Deliberately crash parts of a running system in a test and check that it returns to a correct state. On the BEAM this is how you turn "we designed for failure" into evidence.*
 
 ---
 
-## The idea
+## Why
 
-Most test suites verify happy paths and error paths the developer
-*expected*. Fault injection verifies the third category: what happens
-when a process dies unexpectedly, mid-work, with no warning. On the
-BEAM this is not exotic — it is the runtime's normal mode, and the
-supervision tree is the code under test.
+Ordinary tests cover the paths the author expected: success and handled
+errors. Fault-injection tests cover the unexpected: a process dying in
+the middle of its work, without warning and without running its own
+clean-up. On the BEAM that is not an exotic scenario; supervisors,
+links and monitors exist precisely for it, and they deserve tests like
+any other code.
 
----
+## The basic shape
 
-## Killing a process and asserting cleanup
+1. Start the system under test the way production starts it (under a
+   supervisor; in ExUnit, via `start_supervised!/2`).
+2. Establish and assert the pre-condition.
+3. Kill a process with `Process.exit(pid, :kill)`. The `:kill` reason
+   cannot be trapped, so `terminate/2` does not run: nothing gets a
+   chance to tidy up.
+4. Wait for the death to be observed, then assert the post-condition.
 
 ```elixir
-test "no file is left behind if the GenServer crashes" do
-  path = Path.join(System.tmp_dir!(), Integer.to_string(System.unique_integer([:positive])))
-  pid = start_supervised!({GenServerThatUsesFile, path: path})
+# async: false, because the process is registered under a global name
+test "seat holder comes back with a fresh pid after a brutal kill" do
+  start_supervised!({Box.SeatHolder, name: Box.SeatHolder})
+  old = Process.whereis(Box.SeatHolder)
+  ref = Process.monitor(old)
 
-  assert File.exists?(path)
-  Process.exit(pid, :kill)                    # brutal, no cleanup callbacks run
+  Process.exit(old, :kill)
+  assert_receive {:DOWN, ^ref, :process, ^old, :killed}
 
-  wait_for_passing(2_000, fn -> refute File.exists?(path) end)
+  eventually(fn ->
+    new = Process.whereis(Box.SeatHolder)
+    assert is_pid(new) and new != old
+  end)
 end
 ```
 
-The shape: start the process under test **supervised**
-(`start_supervised!`), assert the pre-condition, kill it brutally, and
-assert the post-condition — the cleanup ran, the state is consistent,
-the world is whole again.
+## Waiting without flakiness
 
----
+Recovery is asynchronous, so asserting straight after the kill is a race.
 
-## wait_for_passing — the assertion that races
-
-After `Process.exit(pid, :kill)` the cleanup happens *asynchronously* —
-asserting immediately is a race condition. The standard helper retries
-an assertion until it passes or the timeout runs out:
+- **Prefer a message.** Death is observable exactly: monitor the process
+  and `assert_receive` the `:DOWN` message.
+- **Poll only for effects that send no message** (a restart, a released
+  lock, a deleted file), with a deadline:
 
 ```elixir
-defp wait_for_passing(timeout, fun) when timeout > 0 do
+defp eventually(fun, timeout_ms \\ 1_000, interval_ms \\ 20) do
+  deadline = System.monotonic_time(:millisecond) + timeout_ms
+  do_eventually(fun, deadline, interval_ms)
+end
+
+defp do_eventually(fun, deadline, interval_ms) do
   fun.()
 rescue
-  _ -> Process.sleep(100); wait_for_passing(timeout - 100, fun)
+  error in [ExUnit.AssertionError] ->
+    if System.monotonic_time(:millisecond) < deadline do
+      Process.sleep(interval_ms)
+      do_eventually(fun, deadline, interval_ms)
+    else
+      reraise error, __STACKTRACE__
+    end
 end
-defp wait_for_passing(_timeout, fun), do: fun.()
 ```
 
-It returns as soon as the assertion passes, so passing tests stay fast;
-the final iteration does not rescue, so a real failure fails the test.
+It returns as soon as the assertion passes, so green tests stay fast,
+and after the deadline it re-raises the real assertion error so the
+failure message is useful.
 
----
+## Clean-up after a brutal kill
 
-## What to fault-inject
+Because a killed process runs no code, clean-up that must survive
+`:kill` has to live somewhere else: in a process that monitors the
+worker, in the supervisor restarting it with fresh state, or in
+resources the runtime releases automatically (ETS tables owned by the
+process, Registry entries, links and monitors). A fault-injection test
+is the only honest check that you put the clean-up in the right place.
+
+## What to target
 
 | Target | Assert |
 |--------|--------|
-| A worker | Its cleanup ran (files, locks, reservations released) |
-| A supervised child | The supervisor restarted it, tree is whole again |
-| The app mid-operation | No partial state: either the write completed or it did not |
-| A projection mid-replay | Restart resumes at the checkpoint and converges (see [TESTING_EVENT_SOURCING](TESTING_EVENT_SOURCING.md)) |
-| A crash loop | `max_restarts` trips, supervisor gives up, failure propagates as designed |
+| A worker holding a resource | The resource is released by whoever is responsible for it |
+| A supervised child | It is restarted and the tree is complete again |
+| A multi-step operation | No half-done state: either the whole write is visible or none of it |
+| A projection mid-replay | After restart it resumes from its checkpoint and converges ([TESTING_EVENT_SOURCING](TESTING_EVENT_SOURCING.md)) |
+| A child that keeps crashing | After the restart intensity is exceeded (Elixir's `Supervisor` default: 3 restarts in 5 seconds; Erlang's `supervisor` default: 1 in 5) the supervisor itself exits and the failure escalates as designed |
 
----
+## Discipline
 
-## The discipline
+- **Use `:kill`.** With a trappable reason such as `:shutdown`, a
+  process that traps exits gets to run its clean-up, so the test checks
+  something gentler than a real crash. (`Process.exit(pid, :normal)`
+  sent to another process does not stop it at all.)
+- **Assert outcomes, not log lines.**
+- **Make waiting explicit** with monitors or a deadline-based helper,
+  never a bare `Process.sleep/1`.
+- **Test your recovery design, not OTP.** You do not need to prove that
+  supervisors restart children; you do need to prove that *your* child
+  comes back in a correct state.
 
-- **Kill with `:kill`, not a polite exit.** Polite exits run cleanup
-  code; the point is to test the system with no such mercy.
-- **Assert the outcome, not the logs.** "The supervisor restarted it"
-  is the test for the tree; "the file is gone" is the test for the
-  worker. Both matter; write both.
-- **Keep the race explicit.** Every post-crash assertion is
-  asynchronous; `wait_for_passing` makes the race a named part of the
-  test instead of a flake.
-- **Fault-inject the seams you depend on.** Test the checkpoints you
-  rely on, the supervisors you designed, the cleanups you wrote — not
-  the runtime's built-in guarantees.
+## Sources
 
-## Why it matters
-
-Supervision and let-it-crash are promises until a test proves them.
-One fault-injection test per critical recovery path converts "we
-designed for failure" into "we have shown the system recovers" — and
-it is the cheapest insurance the BEAM offers, because the failure
-machinery is already there to be exercised.
+- Andrea Leopardi and Jeffrey Matthias, *Testing Elixir: Effective and Robust Testing for Elixir and its Ecosystem*, 1st edition, The Pragmatic Programmers, 2021. https://pragprog.com/titles/lmelixir/testing-elixir/
+- Elixir documentation, `Process.exit/2` and `Supervisor` (restart intensity defaults), hexdocs (free). https://hexdocs.pm/elixir/Process.html#exit/2 and https://hexdocs.pm/elixir/Supervisor.html
+- Erlang/OTP documentation, `supervisor` (restart intensity and period), erlang.org (free). https://www.erlang.org/doc/apps/stdlib/supervisor.html
+- ExUnit documentation, `ExUnit.Callbacks.start_supervised!/2`, hexdocs (free). https://hexdocs.pm/ex_unit/ExUnit.Callbacks.html

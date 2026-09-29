@@ -7,80 +7,93 @@ stage: stable
 
 # Event Sourcing: The Pattern
 
-*Event Sourcing says that all current state is derived from stored events. That is the entirety of it — trivial, until it is not.*
+*Store what happened, not what is. Every piece of current state is computed from an append-only record of facts.*
 
 ---
 
-## The definition
+## What it is
 
-**Event Sourcing:** every piece of state in the system is derived from a log of
-events. No state exists that did not come from an event.
+In an event-sourced system the record of truth is a sequence of events:
+facts about things that have already happened. Current state is not
+stored as the primary data; it is calculated by applying those events
+in order, starting from an empty initial state.
 
-Equivalently: *current state is a left-fold of previous behaviours* —
-`fold(f, state0, events)`.
+In functional terms, state is a left fold over history:
 
-Two consequences follow from the definition alone:
+```elixir
+state = Enum.reduce(events, initial_state, &apply_event/2)
+```
 
-1. **All state is transient.** A domain object in memory, a table in a
-   database — all of it can be thrown away at any moment and rebuilt by
-   replaying the same events.
-2. **Interpretation can change.** State is an *interpretation* of the event
-   log. You can redefine the transformation later, or add a new one, and
-   apply it to history. Data you grouped by customer today can be
-   regrouped by organisation tomorrow by building a new read model — no
-   migration of the old one, which keeps working.
+Everything else follows from taking that sentence seriously.
 
----
+- **Derived state is disposable.** An in-memory aggregate, an ETS table,
+  a SQL read model: any of them can be dropped and recomputed from the
+  events.
+- **The meaning of history can grow.** Because state is a *calculation*,
+  you can write a new calculation later and run it over the old events.
+  A report that nobody thought of when the events were written can still
+  be produced, without migrating anything that already works.
 
-## What it is not
+## How it works
 
-- **Not the same as keeping an event log.** An event log records events;
-  Event Sourcing *additionally* makes that log the primary source of
-  truth for the entire system. You can keep an event log without event
-  sourcing — most trading systems log market data — and get replay value
-  from it.
-- **Not new.** Systems built this way were common until the 1990s, when
-  databases started doing it internally. The pattern predates its name.
+1. A command arrives and is routed to the thing that owns the decision
+   (usually an aggregate, see [AGGREGATES](AGGREGATES.md)).
+2. The owner rebuilds its state by folding its own event stream.
+3. It decides: reject the command, or produce one or more new events.
+4. The new events are appended to the stream, guarded by an expected
+   version so that two concurrent writers cannot both succeed.
+5. Subscribers (projections, process managers, integration adapters)
+   pick the events up and derive whatever they need
+   ([PROJECTIONS](PROJECTIONS.md), [SAGAS_AND_PROCESS_MANAGERS](SAGAS_AND_PROCESS_MANAGERS.md)).
 
----
+What an event must look like is covered in [EVENTS](EVENTS.md); where
+events are kept in [EVENT_LOGS](EVENT_LOGS.md).
 
-## Events
+## On the BEAM
 
-An **event** is a fact that occurred at a point in time, named in the past
-tense. *Alice accepted package AC-378495 at 07:55:42.*
+The fold maps naturally onto OTP. A process per aggregate instance
+(a GenServer, found through a Registry) loads its stream when started,
+keeps the folded state in memory, and handles commands one at a time,
+which serialises decisions per aggregate without locks. If it crashes,
+its supervisor restarts it and it folds its stream again: the event
+store, not the process heap, is what must survive. See
+[GENSERVER](../beam/GENSERVER.md), [REGISTRY](../beam/REGISTRY.md) and
+[SUPERVISION_TREES](../beam/SUPERVISION_TREES.md).
 
-Three rules:
+## Keeping a log is not the same thing
 
-1. **The action has completed.** Events never describe something in
-   progress. `BatchJobRunning` is wrong; `BatchJobStarted` and
-   `BatchJobCompleted` are right. The "running" span is *derived* from the
-   two events.
-2. **Every event is atomic.** If an action is not atomic, split it into
-   started/completed (and intermediate) events. Test every candidate event
-   with: *what if somebody pulls the power cable?*
-3. **Past tense, always.** A single violation of this rule adds exponential
-   complexity to reasoning about the system.
+Many systems write every event to a log for analysis or replay while
+their real state still lives in mutable tables. That is useful, but it
+is not event sourcing. The pattern starts when the log becomes the
+authoritative source and every other store is derived from it.
 
-See [EVENTS](EVENTS.md).
+## What you gain
 
----
+| Property | What it gives you |
+|----------|-------------------|
+| Rebuild | Any derived store can be recreated from scratch |
+| New questions over old data | Add a read model later and backfill it from history |
+| Audit | The log is the history; there is no separate trail to drift out of sync |
+| Time travel | State "as it was at time T" is a fold over a prefix of the log |
 
-## Why people use it
+## What it costs
 
-| Property | What it buys |
-|----------|--------------|
-| Replay | Rebuild any state from scratch; verify; recover |
-| Reinterpretation | New read models over old history; answer questions you did not anticipate |
-| Audit | The log *is* what happened; no separate audit trail to drift |
-| Debuggability | "What was the state at 14:01:27?" is answerable for any point in time |
+| Cost | Where it shows up |
+|------|-------------------|
+| More moving parts | A write side, a read side, and eventual consistency between them |
+| Schema evolution | Old events are never rewritten, so every version must stay readable |
+| Growing storage | History accumulates; retention and compaction need a policy |
+| Personal data | Immutable events clash with erasure requirements; keep personal data outside events or encrypt it per subject |
+| Learning curve | Testing, debugging and operations all change shape |
 
-## The trade-offs
+In Macula codebases event sourcing is the default for significant
+business processes. It is still decided per bounded context: where
+audit, replay and reinterpretation are not worth the extra machinery,
+plain state storage is the better tool.
 
-| Cost | Where it bites |
-|------|----------------|
-| Complexity | Two sides (write/read) where one sufficed; eventual consistency between them |
-| Storage | Events accumulate; scavenging/compaction is its own problem |
-| Tooling | Few databases are append-only logs; you adopt the log's constraints |
+## Sources
 
-Event Sourcing is a **pattern choice**, not a default. Use it where the
-audit, replay and reinterpretation properties are worth the cost.
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Greg Young, *CQRS Documents*, self-published PDF, 2010 (free). https://cqrs.wordpress.com/wp-content/uploads/2010/11/cqrs_documents.pdf
+- Martin Fowler, "Event Sourcing", martinfowler.com, 2005 (free). https://martinfowler.com/eaaDev/EventSourcing.html
+- Microsoft, "Event Sourcing pattern", Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing

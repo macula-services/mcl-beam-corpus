@@ -7,73 +7,73 @@ stage: stable
 
 # Elixir: Structs
 
-*Named maps with fixed keys and defaults — the idiomatic data type. Compile-time key checks, runtime pattern matching.*
+*Maps with a fixed set of keys, defaults and a type name. The idiomatic way to give data a shape the compiler can check.*
 
 ---
 
 ## Definition
 
 ```elixir
-defmodule Customer do
-  defstruct name: "<anonymous>", address: nil, phone: nil
+defmodule Station do
+  @enforce_keys [:id]
+  defstruct [:id, region: "unassigned", peers: []]
 end
 
-%Customer{}                                              # defaults
-%Customer{name: "Sandy Claws", phone: "55554321"}        # any fields, any order
+%Station{id: "st-07"}                      # region and peers take defaults
+%Station{id: "st-07", region: "eu-west"}   # any fields, any order
 ```
 
-A struct is a map with a `__struct__` key naming its module. The
-compiler enforces the field list: unknown keys fail at compile time,
-so typos cannot silently survive.
+A struct is a map with a `__struct__` key holding its module name. When
+the struct is known at compile time, building it with an unknown key is
+a compile-time `KeyError`, and leaving out an `@enforce_keys` field is a
+compile-time `ArgumentError`.
 
 ---
 
-## The guarantees
-
-| Property | What it buys |
-|----------|--------------|
-| Fixed keys, defaults | Field typos fail at compile time, not in production |
-| `is_map`-compatible | Every struct is a map; map functions and pattern matching work |
-| No protocol dispatch on plain maps | `%Customer{}` is a `Map` but protocol implementations dispatch on the *struct* type — it is not `defimpl for: Map` |
-
----
-
-## Structs vs maps
+## Structs versus maps
 
 | | Struct | Map |
 |---|---|---|
-| Keys | Fixed by `defstruct` | Arbitrary |
-| Typo behaviour | Compile-time error | Silent `nil` on access |
-| Protocol dispatch | On the struct's module | On `Map` |
-| Update syntax | `%{c | field: v}` (enforced) | `%{m | k: v}` |
+| Keys | fixed by `defstruct` | arbitrary |
+| Unknown key when building | error (compile time for literals) | allowed |
+| `data.key` on a missing key | `KeyError` | `KeyError` |
+| `data[:key]` | not supported: structs do not implement `Access` | returns `nil` if missing |
+| Update `%{s | k: v}` | key must exist | key must exist |
+| Protocols | dispatch on the struct module; no `Map` implementations inherited | dispatch on `Map` |
+| `is_map/1` | `true` | `true` |
 
-Use a struct when the shape is a **contract** — the fields are part of
-the module's API. Use a map when the shape is open — envelopes,
-configuration, data passing through.
+Use a struct when the shape is a **contract**: the fields are part of the
+module's API. Use a map when the shape is open: envelopes, configuration,
+data passing through. Because structs do not inherit map protocols,
+`Enum` functions do not work on a struct unless it implements
+`Enumerable`.
 
 ---
 
-## The patterns that matter
+## Patterns that matter
 
-- **Update, never mutate.** `%{customer | name: "New"}` returns a new
-  struct; the old one is untouched (immutability is the BEAM's deal).
-- **`@enforce_keys`** for fields with no sane default:
+- **Update, never mutate.** `%{station | region: "eu-north"}` returns a new
+  struct; the old value is unchanged.
+- **`@enforce_keys`** for fields without a sensible default. It is checked
+  when the struct is built, not when it is updated.
+- **Pattern-match on the type** in function heads: `def link(%Station{} = s)`
+  documents and enforces the argument's shape.
+- **`@derive`** for protocols such as `Inspect` (hide fields) or
+  `JSON.Encoder` ([PROTOCOLS](PROTOCOLS.md)).
+- **Commands and events as structs.** In event-sourced code the field list
+  is the schema and enforced keys are its required fields; see
+  [event-sourcing/EVENTS](../event-sourcing/EVENTS.md).
 
-  ```elixir
-  @enforce_keys [:id]
-  defstruct [:id, name: nil]
-  ```
+## Relation to Erlang records
 
-  Building `%Customer{}` without `id` now fails at compile time.
-- **`@derive`** for protocols: `@derive Jason.Encoder` is the standard
-  serialization line.
-- **Structs in event sourcing.** Domain events and commands are structs
-  — the field list *is* the schema, and the enforced keys are the
-  invariants. See [event-sourcing/EVENTS](../event-sourcing/EVENTS.md).
+Erlang's records are compile-time names over tuples
+([MODULES_AND_RECORDS](../erlang/MODULES_AND_RECORDS.md)); structs are
+maps that carry their type at runtime, so another module can match on
+them or inspect them without including a shared header file.
+Elixir's `Record` module exists for interoperating with Erlang records.
 
-## Why it matters
+## Sources
 
-A struct is a data contract the compiler checks for free. In a BEAM
-system where everything is message passing, the struct is how the
-shape of a message is documented and enforced at the boundary —
-cheaply, at compile time, before the message ever crosses it.
+- Elixir guide, Structs. <https://elixir.hexdocs.pm/structs.html>
+- Elixir `Kernel` documentation (`defstruct/1`). <https://elixir.hexdocs.pm/Kernel.html>
+- Elixir `Record` documentation. <https://elixir.hexdocs.pm/Record.html>

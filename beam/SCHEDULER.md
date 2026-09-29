@@ -7,84 +7,76 @@ stage: stable
 
 # BEAM: The Scheduler
 
-*One OS process, a few scheduler threads, millions of BEAM processes. The scheduler is why the BEAM stays responsive under load.*
+*The runtime multiplexes many lightweight processes onto a few OS threads and preempts them by work done. That is why one busy process cannot freeze a node.*
 
 ---
 
-## The m:n model
+## What it is
 
-The entire VM runs as a **single OS process** with a small number of OS
-threads. By default the BEAM starts **as many schedulers as there are CPU
-cores**: four cores, four schedulers. Each scheduler runs in its own OS
-thread and takes turns running BEAM processes:
+A running BEAM node is one OS process. Inside it, the runtime starts one
+**scheduler thread per logical processor** by default (tunable with the
+`+S` emulator flag; `System.schedulers_online/0` or
+`:erlang.system_info(:schedulers_online)` report it). Each scheduler has
+a run queue of BEAM processes and executes them one at a time. Idle
+schedulers steal work from busy ones, so load spreads without the
+programmer placing anything.
 
-```
-OS process
-├── scheduler thread 1 ──▶ process A ──▶ process D ──▶ ...
-├── scheduler thread 2 ──▶ process B ──▶ process E ──▶ ...
-├── scheduler thread 3 ──▶ process C ──▶ ...
-└── scheduler thread 4 ──▶ ...
-```
-
-Each process gets an execution time slot; when it is up, the running
-process is **preempted** and the next one takes over.
+BEAM processes are not OS threads. They are runtime objects with their
+own small heap and stack, created in microseconds. In current OTP the default limit is
+1,048,576 simultaneous processes, raisable with `+P` up to 134,217,727.
+Hundreds of thousands per node is ordinary.
 
 ---
 
-## Why processes are cheap
+## How preemption works
 
-- A process takes **a couple of microseconds** to create and starts at a
-  few kilobytes of memory. An OS thread costs megabytes just for the
-  stack.
-- The VM's theoretical process limit is roughly **134 million**.
-- The cost model that follows: use a dedicated process per task. Each
-  long-running query, connection, or worker gets its own process, and
-  all CPU cores stay busy without the developer managing threads.
+Work is counted in **reductions**, roughly one per function call plus
+extra for built-in functions and I/O. A process runs until it has spent
+its reduction budget (a few thousand), or blocks in `receive`, and then
+goes back to the queue. Because the budget is counted by the runtime,
+not surrendered by the code, a tight loop cannot starve its neighbours.
+`Process.info(pid, :reductions)` shows how much work a process has done;
+comparing two samples is a quick way to find the busy one.
 
----
-
-## Reductions — the unit of work
-
-The scheduler accounts work in **reductions**: roughly, function calls
-and small units of execution. A process runs until it has used its
-reduction budget (or blocks on a receive), then yields. Reductions are
-what make preemption fair: a CPU-bound process cannot monopolise a
-scheduler, because it is interrupted by budget, not by cooperation.
-
-You can see a process's reductions with `Process.info/2` — the
-`reductions` field is "the number of instructions this process has
-executed".
+The exception is native code. A NIF runs outside that accounting, so a
+long NIF call blocks its scheduler. Long-running native work must go on
+**dirty schedulers** (separate thread pools for CPU-bound and I/O-bound
+NIFs) or be split into short calls.
 
 ---
 
-## Concurrency vs parallelism
+## Concurrency is not parallelism
 
-The scheduler makes the distinction precise:
+- **Concurrency:** many independent activities in progress. The BEAM
+  gives you this on any machine, even one core, and it keeps latency
+  fair: a slow request does not delay a fast one.
+- **Parallelism:** activities running at the same instant. You get as
+  much as you have schedulers with work. Ten CPU-bound jobs on four
+  cores finish in roughly the time of three rounds, not one.
 
-- **Concurrency** is independent execution contexts. Five concurrent
-  queries on one core take ten seconds total, exactly like sequential
-  execution — no speedup.
-- **Parallelism** is speedup from more cores. Same five queries, four
-  schedulers: roughly a quarter of the time.
-
-The BEAM gives you concurrency for free; parallelism arrives when cores
-do. Structure for concurrency, scale by adding cores.
+Design for concurrency (one process per independent activity); the
+scheduler turns cores into parallelism when they exist.
 
 ---
 
-## Tuning notes
+## Tuning and pitfalls
 
-- Defaults are right almost always. Change them only with a reason:
-  `+S N` pins the scheduler count; `System.schedulers/0` reports it.
-- **Fewer schedulers** can help when CPU contention from other OS
-  processes dominates — fewer BEAM threads, less thrash.
-- **Dirty schedulers** (separate threads for blocking NIFs) exist for
-  CPU-bound native work; long-running NIFs belong on the dirty side or
-  they block a normal scheduler.
+- **Leave the defaults** unless measurement says otherwise. In
+  containers with a CPU quota, check that the scheduler count matches
+  the quota rather than the host's core count.
+- **Low load average can hide throttling:** a node pinned at its cgroup
+  CPU cap may look calm; read the cgroup CPU statistics.
+- **Shared bottlenecks defeat the scheduler:** a single
+  [GenServer](GENSERVER.md) everyone calls serialises work no matter
+  how many cores exist. See [ETS](ETS.md) for read-heavy shared data.
+- **Why it matters for fault tolerance:** isolation plus preemption means
+  a misbehaving process can be killed and restarted by its supervisor
+  ([SUPERVISION_TREES](SUPERVISION_TREES.md)) while everything else
+  keeps its latency. Compare other runtimes in [CONCURRENCY_MODELS](CONCURRENCY_MODELS.md).
 
-## Why it matters
+## Sources
 
-The scheduler is the property that makes "let it crash" affordable: a
-misbehaving process is preempted by budget, isolated by design, and
-restarted by supervision — and the other million processes never feel
-it. Everything else on the BEAM builds on that guarantee.
+- *Elixir in Action*, 3rd edition, Saša Jurić, Manning, 2024. <https://www.manning.com/books/elixir-in-action-third-edition>
+- Erlang/OTP `erl` command reference (`+S`, `+P`, dirty scheduler flags). <https://www.erlang.org/doc/apps/erts/erl_cmd.html>
+- Erlang/OTP `erlang` module reference (`process_info/2`, `system_info/1`). <https://www.erlang.org/doc/apps/erts/erlang.html>
+- Elixir `System` documentation (`schedulers_online/0`). <https://elixir.hexdocs.pm/System.html>

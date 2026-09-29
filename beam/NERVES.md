@@ -7,74 +7,78 @@ stage: stable
 
 # BEAM: Nerves
 
-*The BEAM on bare metal: Nerves packages an OTP release into a bootable firmware image. Elixir from the sensor to the cloud, one language.*
+*Nerves turns an Elixir/OTP release into a firmware image for embedded Linux boards. The device boots into your supervision tree and nothing else.*
 
 ---
 
-## What Nerves is
+## What it is
 
-Nerves builds a **firmware image** — a complete, minimal Linux system
-whose only application is your OTP release. `mix firmware` produces
-an image you flash to a device; the device boots directly into your
-Elixir application.
-
-| Piece | What it provides |
-|-------|------------------|
-| **Nerves core** | The minimal root filesystem: kernel + busybox + the BEAM |
-| **`mix firmware`** | The release, baked into a bootable image |
-| **`mix nerves.burn`** | Flash the image to an SD card |
-| **Nerves.Runtime** | The firmware's interfaces: networking, file system, reboot |
-
-The result: a device that is **one OTP release from boot to
-application** — no distro, no package manager, nothing on the device
-you did not put there.
+Nerves is a framework and toolchain for building embedded devices on
+the BEAM. It uses Buildroot to produce a small, purpose-built Linux
+system per hardware target (Raspberry Pi models, BeagleBone and others)
+and packages your OTP release on top. The resulting firmware image
+contains a kernel, a minimal root filesystem, the Erlang runtime and
+your applications. There is no general-purpose distribution and no
+package manager on the device; the root filesystem is read-only and
+application data lives on a separate writable partition.
 
 ---
 
-## Why it matters on the BEAM
-
-- **One language, whole stack.** Sensors, business logic, and the
-  cloud API are all Elixir — no C for the device and Elixir for the
-  server.
-- **The fault-tolerance model comes along.** Supervision on a
-  weather station: a crashed sensor process restarts, the system
-  reports, the fleet sees it.
-- **The release is the whole system.** Firmware updates are release
-  updates; rollback is booting the previous firmware slot (A/B
-  partitions).
-
----
-
-## The shape of a Nerves app
+## How you use it
 
 ```
-mix new weather --sup           # the app
-MIX_TARGET=rpi4 mix firmware    # the image, per target hardware
-mix nerves.burn                 # to SD card
+mix nerves.new sensor_node                  # generate a project
+MIX_TARGET=rpi4 mix deps.get
+MIX_TARGET=rpi4 mix firmware                # build the image for that board
+MIX_TARGET=rpi4 mix firmware.burn           # write it to an SD card
+MIX_TARGET=rpi4 mix upload                  # later: push new firmware over the network
 ```
 
-Hardware interaction is Elixir through ports and NIFs — Circuits.GPIO
-for pins, Circuits.I2C/SPI for buses, `:gen_server` processes holding
-the device state. The sensor becomes a supervised process; the
-reading loop is a `handle_info` timer.
+`MIX_TARGET` selects the hardware system; with no target the project
+builds for the host, which is where most logic is developed and tested.
 
-## Rules of thumb
+Hardware access goes through ordinary libraries: the Circuits family
+(`Circuits.GPIO`, `Circuits.I2C`, `Circuits.SPI`, `Circuits.UART`) exposes
+buses and pins, and `nerves_runtime` exposes device-level concerns such
+as firmware metadata, reboot and firmware validation. A sensor is
+typically a GenServer that owns the bus handle and polls on a timer
+sent to itself, so a bad read crashes and restarts one small process.
 
-- **The device is a release, treat it like one.** Reproducible
-  builds, signed images, A/B slots — the deploy discipline of the
-  server applies to the firmware.
-- **Supervise the hardware paths.** A flaky sensor is a crashed
-  process, not a bricked device — design the tree so hardware
-  failures restart small.
-- **Minimize the writable state.** Nerves filesystems are often
-  read-only; state goes to a data partition, not the root image.
-- **Test on the target early.** `MIX_TARGET` changes the world —
-  mock only what you must, validate on hardware what you can.
+---
 
-## Why it matters for the mesh
+## Updates and rollback
 
-The mesh's edge — stations, sensors, weather hardware — is exactly
-Nerves territory: a device that boots straight into an OTP release
-speaking the mesh protocol is a first-class node, not a peripheral.
-The BEAM corpus note: embedded is not a different world, it is the
-same supervision tree with a GPIO attached.
+Nerves firmware uses two slots (A/B). A new image is written to the
+inactive slot and the device boots it tentatively. The application
+confirms it with `Nerves.Runtime.validate_firmware/0`; if it never does,
+the bootloader can revert to the previous slot. This is the same
+"run it, then commit it" discipline as OTP's current/permanent releases
+([HOT_CODE_UPGRADES](HOT_CODE_UPGRADES.md)), applied to a whole device.
+
+## Pitfalls
+
+- **Validate late.** Mark new firmware valid only after the parts that
+  matter (network, mesh connection) are up, or rollback will never
+  trigger when it should.
+- **Keep writable state small and explicit.** Everything outside the
+  data partition is replaced on update.
+- **Test on real hardware early.** Timing, power and bus behaviour
+  differ from host mocks.
+- **Supervise the hardware edge narrowly** so a flaky peripheral
+  restarts its own process, not the application
+  ([SUPERVISION_TREES](SUPERVISION_TREES.md)).
+
+## Relevance to the mesh
+
+Edge devices that boot straight into an OTP release can run the same
+code and supervision patterns as server nodes. Embedded is not a
+separate world: it is the same [application](APPLICATIONS.md) structure
+with a few hardware processes at the leaves.
+
+## Sources
+
+- *Build a Weather Station with Elixir and Nerves*, 1st edition, Alexander Koutmos, Bruce A. Tate and Frank Hunleth, Pragmatic Bookshelf, 2022. <https://pragprog.com/titles/passweather/build-a-weather-station-with-elixir-and-nerves/>
+- Nerves documentation, Getting Started. <https://nerves.hexdocs.pm/getting-started.html>
+- `nerves_runtime` documentation (firmware slots and validation). <https://nerves-runtime.hexdocs.pm/readme.html>
+- `circuits_gpio` documentation. <https://circuits-gpio.hexdocs.pm/readme.html>
+- Nerves Project. <https://nerves-project.org/>

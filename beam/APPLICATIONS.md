@@ -13,87 +13,101 @@ stage: stable
 
 ## What an application is
 
-An OTP **application** is a component of an OTP system: a supervision
-tree (the runtime part) plus an application resource file (the metadata).
-The runtime is what runs; the metadata says how it starts, stops, and
-what it depends on.
+An OTP **application** is a named component with a version, a set of
+modules, an optional supervision tree and a resource file describing
+it. The runtime part is what runs; the metadata says how it starts,
+what configuration it has and which other applications must be running
+first.
 
-The application is the unit the release system assembles: a release
-bundles applications with the runtime so a node starts with everything
-it needs and nothing it does not.
+Applications are what the release system assembles: a release bundles a
+chosen set of application versions with the runtime, so a node boots
+with exactly what it needs.
 
 ---
 
 ## The resource file
 
 ```erlang
-{application, my_app,
- [{description, "..."},
-  {vsn, "1.0.0"},
-  {mod, {my_app, []}},              % application callback module
-  {registered, [my_app_sup]},
-  {applications, [kernel, stdlib]}, % runtime deps, started first
-  {env, []},
-  {modules, []}]}.
+{application, billing,
+ [{description, "Invoice issuing"},
+  {vsn, "1.4.0"},
+  {modules, [billing_app, billing_sup, billing_ledger]},
+  {registered, [billing_sup]},
+  {applications, [kernel, stdlib, crypto]},  % must be started before this one
+  {mod, {billing_app, []}},                  % callback module and start argument
+  {env, [{currency, eur}]}]}.
 ```
 
-In Elixir, `mix` generates this from `application/0` in `mix.exs`:
+In Elixir, Mix generates this `.app` file from `application/0` in
+`mix.exs`; runtime dependencies are inferred from `deps` and extended
+with `extra_applications`:
 
 ```elixir
 def application do
-  [
-    mod: {MyApp, []},
-    extra_applications: [:logger]
-  ]
+  [mod: {Billing.Application, []}, extra_applications: [:logger, :crypto]]
 end
 ```
-
----
-
-## Start types
-
-| Type | Meaning |
-|------|---------|
-| `:permanent` | Crash terminates the whole node — the default for normal apps |
-| `:temporary` | Crash does not affect the node — for tools and one-shots |
-| `:transient` | Normal exit is fine; abnormal crash takes the node down |
 
 ---
 
 ## The callback
 
 ```elixir
-defmodule MyApp do
+defmodule Billing.Application do
   use Application
 
+  @impl true
   def start(_type, _args) do
-    children = [MyApp.Supervisor]
-    Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
+    children = [Billing.Ledger, {Task.Supervisor, name: Billing.Tasks}]
+    Supervisor.start_link(children, strategy: :one_for_one, name: Billing.Supervisor)
   end
 end
 ```
 
-`start/2` must return `{:ok, pid}` of the top supervisor. The
-application is "started" when its top supervisor is alive — everything
-below it is the supervisor's business, not the application's.
+`start/2` returns `{:ok, pid}` (or `{:ok, pid, state}`) where `pid` is
+the top supervisor. The application is running while that supervisor
+is alive; everything below it is the tree's business
+([SUPERVISION_TREES](SUPERVISION_TREES.md)).
 
 ---
 
-## Dependencies and shutdown order
+## Start types
 
-The `applications` list is the runtime dependency declaration: kernel and
-stdlib start first, then the listed apps, then this one. Shutdown is the
-reverse — children of the tree stop first, then the application, then its
-dependencies. The whole system's lifecycle is a tree fold, which is why
-"stop the node cleanly" is not something each process implements.
+The type decides what happens to the node when the application's top
+supervisor terminates:
+
+| Type | If the application terminates |
+|------|-------------------------------|
+| `temporary` | Reported, nothing else stops. The default for `application:start/1` and `Application.start/1`. |
+| `transient` | Normal exit is reported only; any other reason terminates all applications and the node. |
+| `permanent` | All other applications and the node terminate. Releases normally start their applications this way. |
+
+---
+
+## Dependencies and shutdown
+
+The `applications` list is checked at start: listed applications must
+already be running (`application:ensure_all_started/1` starts them in
+dependency order). Stopping an application terminates its top
+supervisor, which stops children in reverse start order. When the node
+shuts down, applications stop in the reverse of the order they started.
+Clean shutdown is therefore a property of the tree, not something each
+process implements.
 
 ## Rules of thumb
 
-- **One top supervisor per application.** `mod` points at the application
-  callback; the callback starts exactly one supervisor.
-- **Applications declare deps, not order-of-code.** Keep `applications`
-  truthful: a missing dependency is a boot-time error, a false one is a
-  lie future readers will build on.
-- **Library vs runtime applications.** An application with no `mod` is a
-  library — it has modules, no process tree, and starts trivially.
-  Know which yours is; a library should never spawn a tree.
+- **One top supervisor per application,** started by the callback module.
+- **Keep `applications` truthful.** A missing dependency fails at boot or
+  worse, at first use; an unnecessary one misleads the next reader.
+- **Library applications have no `mod`.** They provide modules and no
+  process tree. A library should not start processes on load.
+- Configuration read at runtime goes through the application
+  environment (`Application.fetch_env!/2`), set from config files or
+  release runtime configuration ([MIX](../elixir/MIX.md)).
+
+## Sources
+
+- Erlang/OTP Design Principles, Applications. <https://www.erlang.org/doc/system/applications.html>
+- Kernel `app` file reference. <https://www.erlang.org/doc/apps/kernel/app.html>
+- Kernel `application` reference (start types, callback returns). <https://www.erlang.org/doc/apps/kernel/application.html>
+- Elixir `Application` documentation. <https://elixir.hexdocs.pm/Application.html>

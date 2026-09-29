@@ -7,83 +7,107 @@ stage: stable
 
 # Event Sourcing: Aggregates
 
-*The consistency boundary: the object that decides whether a command becomes events, by folding its own history.*
+*An aggregate is a consistency boundary: the single place that decides whether a command is allowed, based only on its own history, and records the decision as events.*
 
 ---
 
-## What an aggregate is
+## What it is
 
-An **aggregate** is the unit that decides: it receives a command,
-loads its own event history, and either emits new events or rejects
-the command. It is the write side's decision point, and its stream is
-its memory.
+In domain-driven design an aggregate is a cluster of objects that is
+changed as a unit, with one **root** that outsiders talk to. In an
+event-sourced system it becomes the decision point of the write side:
 
 ```
-command ──▶ aggregate ──▶ events (appended to its stream)
-                ▲
-                └── hydration: fold its stream into current state
+command ──▶ aggregate ──▶ :ok + new events   (appended to its stream)
+                │     └─▶ {:error, reason}   (nothing appended)
+                └── current state = fold of its own stream
 ```
 
-Hydration is a left-fold: `state = fold(apply, initial, events)`.
-The aggregate's current state is never stored — it is always derived
-by replaying the stream, which is why the aggregate can be rebuilt
-anywhere, any time.
+The aggregate never stores its current state as the truth. It rebuilds
+it by folding its stream (optionally starting from a snapshot), which is
+why it can be recreated on any node at any time.
 
----
+## How it works
 
-## The aggregate root
+Splitting the aggregate into two pure functions keeps it easy to test:
 
-An aggregate has one **root** — the only element reachable from
-outside:
+```elixir
+defmodule Showing do
+  import Bitwise
 
-- External code references the root only, never the aggregate's inner
-  parts.
-- The root exposes the command functions; the invariants are enforced
-  inside the boundary.
-- Sub-entities inside the aggregate may have only **local identity** —
-  meaningful within the aggregate, never across it.
+  # status is an integer of bit flags, set with :evoq_bit_flags.set/2
+  @closed 0b0001
 
-The root is what makes the boundary real: every change to the
-aggregate passes through one door, so consistency can be checked in
-one place. Without the boundary, related changes are scattered and
-transactional guarantees become impossible.
+  # decide: state + command -> events or refusal
+  def execute(%{status: st}, %ReserveSeat{}) when band(st, @closed) != 0,
+    do: {:error, :showing_closed}
+  def execute(%{taken: taken}, %ReserveSeat{seat_id: s}) when is_map_key(taken, s),
+    do: {:error, :seat_taken}
+  def execute(_state, %ReserveSeat{seat_id: s, customer_id: c}),
+    do: {:ok, [%SeatReserved{seat_id: s, customer_id: c}]}
 
----
+  # evolve: state + event -> state (no validation, events are facts)
+  def apply_event(state, %SeatReserved{seat_id: s, customer_id: c}),
+    do: put_in(state.taken[s], c)
+end
+```
 
-## The rules
+`execute` may refuse; `apply_event` must never refuse, because the event
+already happened. The fold that rehydrates the aggregate uses only
+`apply_event`.
 
-| Rule | Why |
-|------|-----|
-| One stream per aggregate | The stream *is* the boundary; replay rehydrates the whole |
-| Load full history, then decide | A decision made on partial history is a wrong decision |
-| Commands may be rejected | The aggregate says no; zero events is a valid outcome |
-| Invariants live inside | "An order cannot ship before payment" is checked at the root, not by callers |
-| Small aggregates | Big aggregates mean many commands contend on one stream; split them |
-| Reference other aggregates by id | Never hold another aggregate's object — ids, then a saga/process manager coordinates (see [SAGAS_AND_PROCESS_MANAGERS](SAGAS_AND_PROCESS_MANAGERS.md)) |
+## The root and the boundary
 
----
+- Outside code refers to the aggregate by its id and sends commands to
+  its root. It never reaches in and changes an inner entity directly.
+- Inner entities (a seat inside a showing) need identity only within the
+  aggregate.
+- All rules that must hold *immediately and together* are checked inside
+  the boundary, in one place, before any event is written.
 
-## Aggregate design heuristics
+## Rules of thumb
 
-- **Name by behaviour, not data.** `Order` decides ordering rules;
-  if it only holds fields, it is a DTO, not an aggregate.
-- **Every command has one aggregate that owns it.** If no aggregate
-  clearly owns the command, the boundary is wrong — or the command
-  belongs to a process manager.
-- **"Invariant" means across events.** An invariant the events can
-  never violate needs no check — only rules spanning multiple events
-  justify the aggregate's existence.
-- **Version by event count.** Concurrency control = append with the
-  expected stream position; a mismatch is a conflict to retry, never
-  a silent overwrite.
+| Rule | Reason |
+|------|--------|
+| One stream per aggregate instance | The stream is the boundary; replaying it restores the whole |
+| Decide on the complete, current history | A decision on a partial or stale fold is a wrong decision |
+| Refusal is normal | Zero events is a valid outcome |
+| Append with the expected version | If someone else appended first, the append fails; reload and retry, never overwrite |
+| Keep aggregates small | Every command for one aggregate is serialised on one stream; big aggregates become hot spots |
+| Refer to other aggregates by id | Rules spanning aggregates are eventually consistent, coordinated by a process manager ([SAGAS_AND_PROCESS_MANAGERS](SAGAS_AND_PROCESS_MANAGERS.md)) |
 
----
+## Finding the boundary
+
+- Start from the **invariants**: which facts must be true together, at
+  the moment a command is accepted? Those belong in one aggregate.
+  Everything else can be separate and eventually consistent.
+- Name aggregates by the behaviour they protect. A thing that only holds
+  fields and enforces nothing is a read model or a value, not an
+  aggregate.
+- Every command should have exactly one obvious owner. If none fits, the
+  boundary is wrong or the command is really a multi-step process.
+
+## On the BEAM
+
+A common runtime shape is one process per live aggregate instance: a
+GenServer registered by aggregate id, started on demand under a
+DynamicSupervisor, folding its stream in `init/1` (or in
+`handle_continue/2` so the caller is not blocked), and stopped after a
+period of inactivity. The process mailbox serialises commands for that
+instance; optimistic concurrency on append protects against a second
+instance on another node. See [GENSERVER](../beam/GENSERVER.md) and
+[SUPERVISION_TREES](../beam/SUPERVISION_TREES.md).
 
 ## Why it matters
 
-The aggregate is where "correct" lives in an event-sourced system:
-the fold is pure, the invariants are explicit, and everything else —
-projections, queries, integrations — reads what the aggregates
-decided. Get the aggregate boundaries right and the rest of the system
-is derivation; get them wrong and every consumer inherits the
-ambiguity.
+Aggregates are where correctness lives. Projections, queries and
+integrations only read what aggregates decided. Well-drawn boundaries
+make the rest of the system derivation; badly drawn ones spread
+contention and ambiguity to every consumer.
+
+## Sources
+
+- Alex Lawrence, *Implementing DDD, CQRS and Event Sourcing*, Leanpub, 2021 (now retired from sale on Leanpub). https://leanpub.com/implementing-ddd-cqrs-and-event-sourcing ; author's page: https://www.alex-lawrence.com/books/
+- Vaughn Vernon, "Effective Aggregate Design" (three-part essay), 2011 (free PDFs). https://www.dddcommunity.org/library/vernon_2011/
+- Martin Fowler, "DDD Aggregate", martinfowler.com, 2013 (free). https://martinfowler.com/bliki/DDD_Aggregate.html
+- Eric Evans, *Domain-Driven Design Reference*, Domain Language, 2015 (free PDF). https://www.domainlanguage.com/ddd/reference/

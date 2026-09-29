@@ -7,76 +7,85 @@ stage: stable
 
 # Elixir: Macros
 
-*Macros run at compile time and return AST. Elixir itself is built with them — `if` and `defmodule` are macros. That power is for libraries, not application code.*
+*A macro is a function the compiler calls with code as data and whose returned code replaces the call. Much of Elixir itself (`if`, `def`, `use`) is built this way. Libraries need macros; application code rarely does.*
 
 ---
 
-## Quote and unquote
+## Code as data
 
-`quote` captures code as its AST representation:
+Elixir code has a plain data representation (the AST): literals stay as
+they are and everything else is a three-element tuple
+`{name, metadata, arguments}`. `quote` turns code into that form and
+`Macro.to_string/1` turns it back:
 
 ```elixir
-iex> quote do: 1 + 2
-{:+, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]], [1, 2]}
+iex> ast = quote do: price(sku, 10)
+{:price, [], [{:sku, [], Elixir}, 10]}
+iex> Macro.to_string(ast)
+"price(sku, 10)"
 ```
 
-A macro is a function that receives quoted arguments and returns quoted
-code, which the compiler substitutes at the call site. `unquote`
-splices evaluated values into that AST:
+`unquote` inserts a value or another piece of AST into a quote, the way
+string interpolation inserts into a string.
+
+## Writing a macro
 
 ```elixir
-defmacro times(lhs, rhs) do
-  quote do
-    lhs = unquote(lhs)   # the caller's expression, spliced in
-    rhs = unquote(rhs)
-    lhs * rhs
+defmodule Guarded do
+  defmacro with_default(expr, default) do
+    quote do
+      case unquote(expr) do
+        nil -> unquote(default)
+        value -> value
+      end
+    end
   end
 end
+
+require Guarded
+Guarded.with_default(Map.get(opts, :port), 4000)
 ```
 
----
+The macro receives its arguments unevaluated (as AST) at compile time
+and returns AST that the compiler expands at the call site. A macro
+must be `require`d (or imported) before use, so it is always visible
+where it applies. `Macro.expand_once/2` shows what a call turns into.
 
-## How the pieces fit
+| Construct | Role |
+|-----------|------|
+| `quote` / `unquote` | build AST, splice into it |
+| `defmacro` | define a compile-time function returning AST |
+| `require` / `import` | make a module's macros available lexically |
+| `use Mod, opts` | calls the `Mod.__using__/1` macro, which injects code into your module |
+| `var!` | deliberately break hygiene to touch a caller's variable |
 
-| Piece | What it does |
-|-------|--------------|
-| `quote do: ...` | Code → AST |
-| `unquote(x)` | Value → AST, spliced into the surrounding quote |
-| `defmacro` | Defines a compile-time function returning AST |
-| `use Mod` | Expands `Mod.__using__/1` — a macro — into the caller |
+## Hygiene
 
-`use` is the dominant macro pattern: a library defines `__using__`, and
-`use GenServer` injects the callback scaffolding into the calling
-module.
-
----
-
-## Macro hygiene
-
-Macros are hygienic by default: variables they introduce do not clash
-with the caller's variables, and imported functions resolve in the
-macro's context. `var!` opts out of hygiene deliberately — the escape
-hatch you almost never need.
+Variables created inside a quote do not leak into, or collide with, the
+caller's variables. `value` in the example above cannot overwrite a
+`value` the caller already has. `var!` overrides that and should be rare.
 
 ---
 
-## The rules
+## When to write one
 
-1. **Macros are for libraries.** Application code should read as plain
-   functions; metaprogramming is how libraries earn their ergonomics
-   (Ecto's `schema`, Phoenix's `plug`, `use GenServer`).
-2. **Prefer functions until they cannot express the thing.** A macro
-   exists to do what a function cannot: run at compile time, inject
-   code, or extend the language. If a function would work, use the
-   function.
-3. **Return plain AST.** Keep quoted code boring; the debugger,
-   formatter, and reader all have to handle what the macro produces.
-4. **One level of expansion.** `use` calls `__using__` which calls other
-   macros — keep the chain shallow and predictable.
+- **Use a function if a function works.** Macros are for what functions
+  cannot do: run at compile time, receive code unevaluated, generate
+  definitions, or add syntax for a DSL (Ecto schemas and queries, ExUnit
+  `test`, `use GenServer`).
+- **Keep the quoted part small.** Put the logic in ordinary functions and
+  have the macro generate calls to them; the official guide gives the
+  same advice. Generated code is harder to read, debug and format.
+- **Mind compile-time dependencies.** Modules that use a macro recompile
+  when it changes.
 
-## Why it matters
+Erlang's counterparts are the preprocessor and
+[parse transforms](../erlang/PARSE_TRANSFORMS.md). Protocols often
+remove the need for type-switching macros ([PROTOCOLS](PROTOCOLS.md)).
 
-Macros are why Elixir's core can be small and its libraries expressive.
-But every macro is a language extension, and every extension is a
-liability for whoever reads the code next. The discipline is the value:
-write macros only where they pay for their cost in clarity.
+## Sources
+
+- *Metaprogramming Elixir: Write Less Code, Get More Done (and Have Fun!)*, 1st edition, Chris McCord, Pragmatic Bookshelf, 2015. <https://pragprog.com/titles/cmelixir/metaprogramming-elixir/>
+- Elixir guide, Quote and unquote. <https://elixir.hexdocs.pm/quote-and-unquote.html>
+- Elixir guide, Macros. <https://elixir.hexdocs.pm/macros.html>
+- Elixir `Macro` documentation. <https://elixir.hexdocs.pm/Macro.html>

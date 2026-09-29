@@ -7,85 +7,94 @@ stage: stable
 
 # Testing: Event-Sourced Systems
 
-*Event sourcing changes what tests are for: they are not just validation, they are the documentation of what the system does.*
+*When state is a fold over events, tests can be written as history: given these past events, when this happens, then expect these new events or this read model. Such tests double as a readable specification.*
 
 ---
 
-## The shift in mindset
+## Why event sourcing changes testing
 
-In an event-sourced system, tests stop being a detail and become the
-**communication mechanism** for the system's behaviour. A test suite
-written as "given these events, when this command, then these events" is
-a machine-checked specification — and the test run is a use-case
-documentation artifact.
+In a state-based system, a test sets up rows in a database and inspects
+rows afterwards. In an event-sourced system the natural inputs and
+outputs are events. That has two consequences:
 
-This reverses the usual relationship: the tests *are* the doc, and the
-doc is executable.
+- Tests can be phrased in the language of the business ("given the seat
+  was reserved and then paid for, when the customer cancels, then a
+  refund is issued"), so the suite reads as a specification of
+  behaviour that domain experts can check.
+- The write side needs no database, no projections and no mocks to be
+  tested: the aggregate's decision is a pure function of its history and
+  the command.
 
----
+## Three kinds of test
 
-## The three test shapes
+### 1. Command tests: given, when, then
 
-### 1. Command tests — "given, when, then"
+```elixir
+test "a paid reservation that is cancelled is refunded" do
+  given = [%SeatReserved{seat_id: "B-12", customer_id: "c1"},
+           %PaymentCaptured{seat_id: "B-12", amount_cents: 2_400}]
 
-```
-given:  [ItemCreated, ItemPriced]        # prior events, hydrated
-when:   MarkItemPaid                     # the command
-then:   [ItemMarkedPaid]                 # expected new events
-```
+  state = Enum.reduce(given, Showing.initial(), &Showing.apply_event(&2, &1))
 
-The aggregate's history goes in, the command goes in, the events come
-out. No database, no projection, no mocks — the aggregate is a pure
-function over its history. This is the workhorse test of the write side.
-
-### 2. Replay tests — "given events, the read model is X"
-
-```
-given:  [OrderPlaced, OrderPaid, OrderShipped]
-project: OrderStatusProjection
-expect: %{order_id: 77, status: :shipped}
+  assert {:ok, [%RefundIssued{seat_id: "B-12", amount_cents: 2_400},
+                %SeatReleased{seat_id: "B-12"}]} =
+           Showing.execute(state, %CancelReservation{seat_id: "B-12"})
+end
 ```
 
-Feed an event sequence to a projection and assert the resulting read
-model. Then feed the same sequence again from a restored checkpoint and
-assert **idempotency** — the read model ends identical, nothing doubles.
+Also write the refusals: given a history, when a command arrives, then
+`{:error, reason}` and no events. These are the workhorse tests of the
+write side. A tiny helper that takes `given`, `when` and `then` keeps
+them to a few lines each.
 
-### 3. Fault tests — "kill it, it recovers"
+### 2. Projection tests: given events, expect a read model
 
-Kill the projection mid-replay, restart it, assert it resumes at the
-checkpoint and converges to the same read model. These are the tests
-that earn the fault-tolerance claims the architecture makes.
+Feed a list of events through a projection's handler and assert on the
+resulting read model. Then run the same list again, or replay from an
+earlier checkpoint, and assert the read model is unchanged: handlers
+must be idempotent because delivery is usually at least once
+([PROJECTIONS](../event-sourcing/PROJECTIONS.md),
+[CHECKPOINTS](../event-sourcing/CHECKPOINTS.md)).
 
----
+### 3. Recovery tests: crash, restart, converge
 
-## Why "given events" beats fixtures
+Kill a projection or process manager part way through a replay, let the
+supervisor restart it, and assert that it resumes from its checkpoint
+and reaches the same read model as an uninterrupted run. See
+[FAULT_INJECTION](FAULT_INJECTION.md) for the mechanics.
 
-A traditional test sets up state by writing rows. An event-sourced test
-sets up state by *listing the events that produced it*. The difference:
+## Why "given events" is better than fixtures
 
-- The setup **is** part of the specification — you cannot create state
-  the events cannot explain.
-- Tests survive schema changes on the read side: they only know events,
-  and the read models are rebuilt anyway.
-- A regression reads as history: "given the order was paid *then*
-  shipped, when the customer cancels..." — the why is in the given.
+- You cannot set up a state that no sequence of events could produce, so
+  tests never rely on impossible data.
+- Read-model schema changes do not break write-side tests: those tests
+  only know events.
+- A test's history explains the situation. The order of events in
+  `given` is part of the scenario, which a row fixture hides.
 
----
+## Going further
 
-## Failing fast
-
-The point of automated tests is to find mistakes **as fast as possible**:
-fifteen seconds after a change, not three days later in manual testing.
-The longer a bug lives, the more code becomes dependent on its
-behaviour — some bugs cost weeks to remove not because they are hard but
-because a hundred things rely on them. In an event-sourced system the
-equivalent failure mode is a bad *event* that every projection learns to
-work around; the power-cable test at event-design time is cheaper than
-every consumer's workaround.
+- **Property-based tests** generate the histories for you: random valid
+  command sequences run against the aggregate and a simple model
+  ([PROPERTY_BASED_TESTING](PROPERTY_BASED_TESTING.md)).
+- **Upcaster tests**: for every old event version still in the store,
+  assert it decodes into the current shape. These guard replay after a
+  schema change.
+- **Fast feedback matters more than usual.** A mistake in an event's
+  shape, once written to the store, is permanent and every consumer has
+  to cope with it. Catch it in a test minutes after writing it, not after
+  deployment.
 
 ## Rule of thumb
 
-Write the **given/when/then** command tests for every command, replay
-tests for every projection, and at least one fault test per checkpoint
-kind you rely on. If the test cannot be written as "given events", the
-design is hiding state from itself.
+Command tests for every command (including refusals), projection tests
+for every projection (including replay and duplicates), and at least one
+recovery test per kind of checkpoint you rely on. If a scenario cannot
+be written as "given events", the design is keeping state somewhere the
+events do not explain.
+
+## Sources
+
+- Greg Young, *Patterns of Event Sourced Systems*, Leanpub (in progress, last updated 2025). https://leanpub.com/patternsofeventsourcedsystems
+- Microsoft, "Event Sourcing pattern" (testing considerations), Azure Architecture Center (free). https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing
+- Microsoft patterns & practices, *Exploring CQRS and Event Sourcing* (Journey 4 discusses the team's testing approach), 2012 (free online). https://learn.microsoft.com/en-us/previous-versions/msp-n-p/jj554200(v=pandp.10)
