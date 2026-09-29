@@ -21,12 +21,9 @@ notes are the reference for how that substrate works.
 | [SUPERVISION_TREES](SUPERVISION_TREES.md) | Failure model, supervisor strategies, child specs, DynamicSupervisor |
 | [APPLICATIONS](APPLICATIONS.md) | The composition unit: resource files, start types, dependencies |
 | [ETS](ETS.md) | In-memory tables: types, ownership, what it is and is not for |
-
-## Planned
-
-- The scheduler: pre-emption, reductions, dirty schedulers, NIFs
-- Distribution: nodes, cookies, global vs pg, when to avoid it
-- Hot code upgrades: appups/relups, why they matter for fleets
+| [SCHEDULER](SCHEDULER.md) | The m:n model, reductions, concurrency vs parallelism |
+| [DISTRIBUTION](DISTRIBUTION.md) | Location transparency, nodes, EPMD, the cookie |
+| [HOT_CODE_UPGRADES](HOT_CODE_UPGRADES.md) | appup/relup, release_handler, current vs permanent |
 
 ## One-page summary
 

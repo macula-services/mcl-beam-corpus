@@ -16,14 +16,12 @@ model; this domain holds what is Elixir-specific on top of that.
 
 ## Notes
 
-None yet. See [Planned](#planned).
-
-## Planned
-
-- Macros: quote/unquote, compile-time code generation, when not to macro
-- Protocols: dispatch by type, deriving, consolidation
-- Structs vs maps: defaults, compile-time key checks, enforcing keys
-- mix tasks: project layout, deps, releases, `mix xref`
+| Note | Covers |
+|------|--------|
+| [MACROS](MACROS.md) | Quote/unquote, `use`, hygiene, macros are for libraries |
+| [PROTOCOLS](PROTOCOLS.md) | Dispatch by first argument's type, `@derive`, consolidation |
+| [STRUCTS](STRUCTS.md) | Fixed keys, enforced keys, structs vs maps |
+| [MIX](MIX.md) | Project layout, the tasks worth knowing, releases |
 
 ## One-page summary
 

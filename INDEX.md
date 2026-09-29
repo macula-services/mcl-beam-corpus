@@ -28,6 +28,9 @@ mesh is built on.
 | [SUPERVISION_TREES](beam/SUPERVISION_TREES.md) | Failure model, supervisor strategies, child specs, DynamicSupervisor |
 | [APPLICATIONS](beam/APPLICATIONS.md) | The composition unit: resource files, start types, dependencies |
 | [ETS](beam/ETS.md) | In-memory tables: types, ownership, what it is and is not for |
+| [SCHEDULER](beam/SCHEDULER.md) | The m:n model, reductions, concurrency vs parallelism |
+| [DISTRIBUTION](beam/DISTRIBUTION.md) | Location transparency, nodes, EPMD, the cookie |
+| [HOT_CODE_UPGRADES](beam/HOT_CODE_UPGRADES.md) | appup/relup, release_handler, current vs permanent |
 
 ### Elixir — `elixir/`
 
@@ -35,7 +38,11 @@ Language-specific knowledge.
 
 | Note | Covers |
 |------|--------|
-| [README](elixir/README.md) | What belongs here, planned notes |
+| [README](elixir/README.md) | The language in one page |
+| [MACROS](elixir/MACROS.md) | Quote/unquote, `use`, hygiene, macros are for libraries |
+| [PROTOCOLS](elixir/PROTOCOLS.md) | Dispatch by first argument's type, `@derive`, consolidation |
+| [STRUCTS](elixir/STRUCTS.md) | Fixed keys, enforced keys, structs vs maps |
+| [MIX](elixir/MIX.md) | Project layout, tasks, releases |
 
 ### Erlang — `erlang/`
 
@@ -43,7 +50,9 @@ Language-specific knowledge.
 
 | Note | Covers |
 |------|--------|
-| [README](erlang/README.md) | What belongs here, planned notes |
+| [README](erlang/README.md) | The language in one page |
+| [MODULES_AND_RECORDS](erlang/MODULES_AND_RECORDS.md) | Exports, attributes, records as tagged tuples |
+| [PARSE_TRANSFORMS](erlang/PARSE_TRANSFORMS.md) | Compile-time AST rewrites |
 
 ### Event Sourcing & CQRS — `event-sourcing/`
 
@@ -86,11 +95,3 @@ How to hold all of the above to a standard.
 
 1. [`README.md`](README.md) → this index → the domain that interests you.
 2. Notes are short and standalone; there is no required order.
-
----
-
-## Planned
-
-- `beam/`: the scheduler, distribution, hot code upgrades
-- `elixir/`: macros, protocols, structs, mix
-- `erlang/`: modules and records, parse transforms
