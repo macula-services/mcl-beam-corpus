@@ -36,6 +36,8 @@ mesh is built on.
 | [HOT_CODE_UPGRADES](beam/HOT_CODE_UPGRADES.md) | appup/relup, release_handler, current vs permanent |
 | [CONCURRENCY_MODELS](beam/CONCURRENCY_MODELS.md) | The seven models; the actor model's place among them |
 | [DESIGN_PATTERNS](beam/DESIGN_PATTERNS.md) | The GoF 23 mapped onto BEAM built-ins |
+| [NERVES](beam/NERVES.md) | The BEAM on bare metal: firmware as an OTP release |
+| [GENETIC_ALGORITHMS](beam/GENETIC_ALGORITHMS.md) | Populations on the BEAM: selection, crossover, the GenServer loop |
 
 ### Elixir — `elixir/`
 
@@ -91,6 +93,7 @@ How to hold all of the above to a standard.
 | [PROPERTY_BASED_TESTING](testing/PROPERTY_BASED_TESTING.md) | Stateless vs stateful, shrinking, models, state machines |
 | [FAULT_INJECTION](testing/FAULT_INJECTION.md) | Killing processes, cleanup assertions, wait_for_passing |
 | [EXUNIT](testing/EXUNIT.md) | The four phases, describe, setup blocks, async |
+| [LEGACY_CODE](testing/LEGACY_CODE.md) | Seams, characterization tests, dependency breaking |
 
 ### Architecture — `architecture/`
 
