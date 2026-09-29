@@ -26,6 +26,8 @@ mesh is built on.
 |------|--------|
 | [README](beam/README.md) | The BEAM in one page: processes, scheduling, memory |
 | [SUPERVISION_TREES](beam/SUPERVISION_TREES.md) | Failure model, supervisor strategies, child specs, DynamicSupervisor |
+| [APPLICATIONS](beam/APPLICATIONS.md) | The composition unit: resource files, start types, dependencies |
+| [ETS](beam/ETS.md) | In-memory tables: types, ownership, what it is and is not for |
 
 ### Elixir — `elixir/`
 
@@ -50,7 +52,17 @@ The write model, the read models, and everything between.
 | Note | Covers |
 |------|--------|
 | [README](event-sourcing/README.md) | The pattern landscape at a glance |
-| [PROJECTIONS](event-sourcing/PROJECTIONS.md) | Deriving read models from events: simple, updating, batched |
+| [EVENT_SOURCING](event-sourcing/EVENT_SOURCING.md) | State derived from events; replay; reinterpretation; trade-offs |
+| [EVENTS](event-sourcing/EVENTS.md) | Past tense, atomicity, immutability |
+| [COMMANDS_AND_QUERIES](event-sourcing/COMMANDS_AND_QUERIES.md) | Commands return status only; queries never mutate |
+| [CQRS](event-sourcing/CQRS.md) | The one-line split; what it is not |
+| [EVENT_LOGS](event-sourcing/EVENT_LOGS.md) | Appending, segmented, distributed; streams; log vs sourcing |
+| [PROJECTIONS](event-sourcing/PROJECTIONS.md) | Simple, updating, inserting, batched; replay vs live |
+| [CHECKPOINTS](event-sourcing/CHECKPOINTS.md) | Memory, file, database, stream, shared, consensus |
+| [SAGAS_AND_PROCESS_MANAGERS](event-sourcing/SAGAS_AND_PROCESS_MANAGERS.md) | The distinction; versioning long processes |
+| [IDS_AND_CORRELATION](event-sourcing/IDS_AND_CORRELATION.md) | Message, causation, correlation, conversation ids |
+| [INTEGRATION_EVENTS](event-sourcing/INTEGRATION_EVENTS.md) | Denormalized contracts; aggregators; direct integration |
+| [STREAM_FORK_AND_JOIN](event-sourcing/STREAM_FORK_AND_JOIN.md) | Reindexing with link events; join ordering |
 
 ### Testing — `testing/`
 
@@ -58,7 +70,9 @@ How to hold all of the above to a standard.
 
 | Note | Covers |
 |------|--------|
-| [README](testing/README.md) | What belongs here, planned notes |
+| [README](testing/README.md) | The three highest-value test shapes |
+| [TESTING_EVENT_SOURCING](testing/TESTING_EVENT_SOURCING.md) | Given/when/then, replay tests, tests as documentation |
+| [PROPERTY_BASED_TESTING](testing/PROPERTY_BASED_TESTING.md) | Invariants, generators, shrinking, stateful models |
 
 ---
 
@@ -77,6 +91,6 @@ How to hold all of the above to a standard.
 
 ## Planned
 
-- `beam/`: applications, ETS, distribution, hot code upgrades
-- `event-sourcing/`: event logs, checkpoints, sagas & process managers, ids & correlation
-- `testing/`: property-based testing, fault injection
+- `beam/`: the scheduler, distribution, hot code upgrades
+- `elixir/`: macros, protocols, structs, mix
+- `erlang/`: modules and records, parse transforms

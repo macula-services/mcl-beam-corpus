@@ -19,12 +19,12 @@ notes are the reference for how that substrate works.
 | Note | Covers |
 |------|--------|
 | [SUPERVISION_TREES](SUPERVISION_TREES.md) | Failure model, supervisor strategies, child specs, DynamicSupervisor |
+| [APPLICATIONS](APPLICATIONS.md) | The composition unit: resource files, start types, dependencies |
+| [ETS](ETS.md) | In-memory tables: types, ownership, what it is and is not for |
 
 ## Planned
 
-- Applications: what an OTP application is, start types, deps
 - The scheduler: pre-emption, reductions, dirty schedulers, NIFs
-- ETS: ownership, heirs, concurrency, when not to use it
 - Distribution: nodes, cookies, global vs pg, when to avoid it
 - Hot code upgrades: appups/relups, why they matter for fleets
 

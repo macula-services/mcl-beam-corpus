@@ -64,6 +64,17 @@ Update the row if the entity exists, insert it if it does not. The safe
 default for entity read models when event order is not guaranteed to
 start with a "created" event.
 
+**The inserting variant — insert every state.** Instead of updating one
+row, insert a new row per change; everything becomes an insert. Space
+unfriendly, but:
+
+- Updates become bulk-insertable — a dramatic speedup on replay.
+- The read model keeps every historical state, enabling **as-of / as-at
+  queries**: the balance *as of* a moment, or *as at* a moment excluding
+  what does not apply yet (a cheque deposited today but settling
+  tomorrow). Common in financial systems, and the main reason to pick
+  this variant. Pair with scavenging of old rows to bound growth.
+
 ---
 
 ## Beyond one row
@@ -91,6 +102,19 @@ Store the checkpoint *with* the write it guards, transactionally when
 possible: a projection that wrote rows but lost its checkpoint replays
 and double-writes (make writes idempotent to be safe), and one that
 saved its checkpoint but lost the write silently skips events.
+The full catalogue is in [CHECKPOINTS](CHECKPOINTS.md).
+
+## Batched replay, live tail
+
+A projection often has two phases with different optimisations:
+
+- **Replay (history)**: goal is catching up fast. Batch heavily — write a
+  CSV and bulk-insert it; an 80-million-row replay is orders of magnitude
+  faster that way. Latency to the read model is irrelevant.
+- **Live (caught up)**: goal is freshness. Switch to per-event writes.
+
+If both phases share code, switching is a batch-size change: fall behind,
+batch up; caught up, individual writes.
 
 ---
 

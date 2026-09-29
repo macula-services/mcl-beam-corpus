@@ -13,15 +13,10 @@ stage: stable
 
 ## Notes
 
-None yet. See [Planned](#planned).
-
-## Planned
-
-- ExUnit: async tests, the database sandbox problem, doctests
-- Property-based testing: PropEr/StreamData, generators, shrinking,
-  stateful models
-- Fault injection: killing processes, partitioning, testing supervision
-- Testing projections: replay determinism, checkpoint resumption
+| Note | Covers |
+|------|--------|
+| [TESTING_EVENT_SOURCING](TESTING_EVENT_SOURCING.md) | Given/when/then command tests, replay tests, fault tests, tests as documentation |
+| [PROPERTY_BASED_TESTING](PROPERTY_BASED_TESTING.md) | Invariants, generators, shrinking; PropEr and StreamData; stateful models |
 
 ## One-page summary
 
